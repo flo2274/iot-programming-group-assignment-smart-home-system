@@ -1,252 +1,299 @@
-# edge_device_2_mqtt_tb_rules.py
+# edge_device_2.py (Refactored for better architecture and functionality with English comments)
+
 import serial
 import time
 import json
 import threading
 import paho.mqtt.client as mqtt
+import os # For the dummy API trigger file check
 
-# --- Configuration (SAME AS BEFORE - ensure these are correct) ---
-SERIAL_PORT_ARDUINO2 = '/dev/ttyACM0'  # <<<<<<< YOUR RASPBERRY PI ARDUINO2 PORT
+# --- Configuration ---
+SERIAL_PORT_ARDUINO2 = '/dev/ttyACM0'  # Your correct RPi port for Arduino 2
 BAUD_RATE = 9600
 
+# Edge-to-Edge MQTT Broker
 MQTT_BROKER_HOST = "test.mosquitto.org"
 MQTT_BROKER_PORT = 1883
-MQTT_CLIENT_ID_EDGE2 = "edge2-223151653621" # UNIQUE (different from Edge 1)
-TOPIC_EDGE2_DATA_A2 = f"iot_project/groupXY/{MQTT_CLIENT_ID_EDGE2}/arduino2/data"
-TOPIC_EDGE2_CMD_A2 = f"iot_project/groupXY/{MQTT_CLIENT_ID_EDGE2}/arduino2/cmd"
-# TOPIC_EDGE1_CMD_A1 is not directly used for publishing from here now, Edge1 subscribes to TOPIC_EDGE2_DATA_A2 for IR/Button
+MQTT_CLIENT_ID_EDGE2 = "edge2-smart-home-inputs-22312" # Unique ID for this device
 
-THINGSBOARD_HOST = "demo.thingsboard.io"
+# MQTT Topics
+TOPIC_PREFIX = "iot_project/groupXY" # Common prefix for your project (change groupXY)
+TOPIC_EDGE2_A2_INPUTS_PUB = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE2}/arduino2/inputs" # For publishing IR/Button data
+TOPIC_EDGE2_A2_CMD_SUB = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE2}/arduino2/cmd"  # For subscribing to Buzzer commands
+
+# ThingsBoard Configuration
+THINGSBOARD_HOST = "mqtt.thingsboard.cloud" # Or your instance (ensure this is correct)
 THINGSBOARD_PORT = 1883
-THINGSBOARD_ACCESS_TOKEN_EDGE2 = "rj6t94nd52Gk2vFrXXDO" # FROM THINGSBOARD
+THINGSBOARD_ACCESS_TOKEN_EDGE2 = "rj6t94nd52Gk2vFrXXDO" # Your valid token for Edge 2's device
 
-# --- Global Variables (Mostly same as before) ---
-arduino2_ser = None
-mqtt_client_edge2 = None
-tb_client_edge2 = None
-latest_arduino2_data = {
-    "ir_code": None, "button_state": None, "error": None
+# --- State variables ---
+actuator_states_a2 = { # For actuators on Arduino 2
+    "buzzer_status": False # True if ON, False if OFF
 }
+
+# --- Global Variables for Connections & Data ---
+arduino2_ser = None
+edge_mqtt_client = None
+tb_mqtt_client = None
 serial_lock_a2 = threading.Lock()
 
+# Not strictly needed as global cache if data is processed immediately, but can be useful for debugging
+latest_arduino2_input_data = {
+    "ir_code": None, "button_state": None, "error": None, "api_alarm_triggered": False
+}
+
+DUMMY_API_TRIGGER_FILE = "trigger_buzzer_api.flag" # Dummy file for API trigger
+
+# --- Helper function to send actuator status to ThingsBoard ---
+def publish_buzzer_status_to_thingsboard(is_on_state):
+    if tb_mqtt_client and tb_mqtt_client.is_connected():
+        payload = {'buzzer_status': is_on_state}
+        print(f"THINGSBOARD STATUS UPDATE (Edge2 - Buzzer): {payload}")
+        tb_mqtt_client.publish("v1/devices/me/telemetry", json.dumps(payload), qos=1)
+
 # --- MQTT Callbacks (for Edge-to-Edge MQTT) ---
-# on_connect_mqtt_edge, on_message_mqtt_edge (largely same, handles commands for A2)
-def on_connect_mqtt_edge(client, userdata, flags, rc, properties=None):
+def on_connect_edge_mqtt(client, userdata, flags, rc, properties=None):
     if rc == 0:
-        print(f"EDGE MQTT: Connected to {MQTT_BROKER_HOST}!")
-        client.subscribe(TOPIC_EDGE2_CMD_A2) # Commands for Arduino 2
-        print(f"EDGE MQTT: Subscribed to {TOPIC_EDGE2_CMD_A2}")
+        print(f"EDGE MQTT: Connected to {MQTT_BROKER_HOST} as {MQTT_CLIENT_ID_EDGE2}!")
+        client.subscribe(TOPIC_EDGE2_A2_CMD_SUB) # Commands for this device's Arduino (Buzzer)
+        print(f"EDGE MQTT: Subscribed to {TOPIC_EDGE2_A2_CMD_SUB}")
     else:
         print(f"EDGE MQTT: Failed to connect, return code {rc}")
 
-def on_message_mqtt_edge(client, userdata, msg):
+def on_message_edge_mqtt(client, userdata, msg):
+    # global actuator_states_a2 # Modifying elements
     payload_str = msg.payload.decode('utf-8')
-    # print(f"EDGE MQTT Received: Topic: {msg.topic}, Payload: {payload_str}") # Can be noisy
+    # print(f"EDGE MQTT Received on Edge2: Topic: {msg.topic}, Payload: {payload_str}")
     try:
         data = json.loads(payload_str)
-        if msg.topic == TOPIC_EDGE2_CMD_A2: # Commands for Arduino 2
-            handle_arduino2_command_from_mqtt(data)
+        if msg.topic == TOPIC_EDGE2_A2_CMD_SUB:
+            if "actuator" in data and data["actuator"].upper() == "BUZZER":
+                new_state_str = str(data.get("value", "")).upper()
+                new_buzzer_on_state = (new_state_str == "ON")
+
+                if new_state_str == "BEEP": # Handle BEEP command
+                    duration = data.get("duration", 500) # Default 500ms
+                    print(f"EDGE MQTT CMD for A2: BUZZER BEEP for {duration}ms")
+                    send_command_to_arduino2(f"BUZZER_BEEP:{duration}")
+                    # For a beep, we might not change the persistent 'buzzer_status'
+                    # or we might briefly set it true then false. For now, no persistent state change for beep.
+                elif actuator_states_a2['buzzer_status'] != new_buzzer_on_state:
+                    print(f"EDGE MQTT CMD for A2: BUZZER {'ON' if new_buzzer_on_state else 'OFF'}")
+                    send_command_to_arduino2(f"BUZZER:{'ON' if new_buzzer_on_state else 'OFF'}")
+                    actuator_states_a2['buzzer_status'] = new_buzzer_on_state
+                    publish_buzzer_status_to_thingsboard(new_buzzer_on_state)
+            elif "raw_command" in data: # Less preferred
+                 print(f"EDGE MQTT RAW CMD for A2: {data['raw_command']}")
+                 send_command_to_arduino2(data["raw_command"])
+                 # Difficult to update 'buzzer_status' from raw command
     except json.JSONDecodeError:
-        print(f"EDGE MQTT: Error decoding JSON: {payload_str}")
+        print(f"EDGE MQTT: Error decoding JSON on Edge2: {payload_str}")
     except Exception as e:
-        print(f"EDGE MQTT: Error processing message: {e} on topic {msg.topic}")
+        print(f"EDGE MQTT: Error processing message on Edge2: {e} on topic {msg.topic}")
 
-def handle_arduino2_command_from_mqtt(command_data): # Same as before
-    """ Handles commands received over MQTT intended for Arduino 2 """
-    if "actuator" in command_data and "value" in command_data:
-        actuator = command_data["actuator"]
-        value = command_data["value"]
-        if actuator == "BUZZER":
-            send_command_to_arduino2(f"BUZZER:{value}")
-        elif actuator == "BUZZER_BEEP":
-            send_command_to_arduino2(f"BUZZER_BEEP:{value}")
-    elif "raw_command" in command_data:
-        send_command_to_arduino2(command_data["raw_command"])
-
-# --- ThingsBoard MQTT Callbacks (on_connect_tb, on_message_tb) ---
-# These can remain largely the same as before, handling RPC from ThingsBoard for Buzzer.
-def on_connect_tb(client, userdata, flags, rc, properties=None): # Same
+# --- ThingsBoard MQTT Callbacks ---
+def on_connect_tb(client, userdata, flags, rc, properties=None):
     if rc == 0:
-        print(f"THINGSBOARD: Connected to {THINGSBOARD_HOST}!")
+        print(f"THINGSBOARD: Connected to {THINGSBOARD_HOST} (Edge2)!")
         client.subscribe("v1/devices/me/rpc/request/+")
-        print("THINGSBOARD: Subscribed to RPC requests.")
+        print("THINGSBOARD: Subscribed to RPC requests (Edge2).")
     else:
-        print(f"THINGSBOARD: Failed to connect, return code {rc}")
+        print(f"THINGSBOARD: Failed to connect (Edge2), return code {rc}")
 
-def on_message_tb(client, userdata, msg): # Same
-    print(f"THINGSBOARD RPC Received: Topic: {msg.topic}, Payload: {msg.payload.decode()}")
+def on_message_tb(client, userdata, msg):
+    # global actuator_states_a2 # Modifying elements
+    print(f"THINGSBOARD RPC Received (Edge2): Topic: {msg.topic}, Payload: {msg.payload.decode()}")
+    request_id = msg.topic.split('/')[-1]
+    response_payload = {"status": "OK"}
+    telemetry_update = {} # For status updates
+
     try:
         data = json.loads(msg.payload)
         method = data.get("method")
         params = data.get("params")
-        request_id = msg.topic.split('/')[-1]
-        response = {"status": "ERROR", "error": "Unknown method"}
 
         if method == "setBuzzerState":
             new_state = bool(params)
-            send_command_to_arduino2(f"BUZZER:{'ON' if new_state else 'OFF'}")
-            response = {"status": "OK", "buzzer_state_set_to": new_state}
+            if actuator_states_a2['buzzer_status'] != new_state:
+                send_command_to_arduino2(f"BUZZER:{'ON' if new_state else 'OFF'}")
+                actuator_states_a2['buzzer_status'] = new_state
+                telemetry_update['buzzer_status'] = new_state
+            response_payload["buzzer_state_set_to"] = new_state
         elif method == "beepBuzzer":
-            duration = int(params)
-            send_command_to_arduino2(f"BUZZER_BEEP:{duration}")
-            response = {"status": "OK", "buzzer_beeped_for_ms": duration}
+            try:
+                duration = int(params)
+                send_command_to_arduino2(f"BUZZER_BEEP:{duration}")
+                response_payload["buzzer_beeped_for_ms"] = duration
+                # A beep doesn't usually change the persistent 'buzzer_status'
+                # but you could send a temporary status if desired.
+            except ValueError:
+                 response_payload = {"status": "ERROR", "error": "Invalid duration for beep"}
+        else:
+            response_payload = {"status": "ERROR", "error": f"Unknown RPC method: {method}"}
 
-        tb_client_edge2.publish(f"v1/devices/me/rpc/response/{request_id}", json.dumps(response), qos=1)
+        if telemetry_update: # If a persistent state changed
+            publish_buzzer_status_to_thingsboard(actuator_states_a2['buzzer_status'])
+
+
     except Exception as e:
-        print(f"THINGSBOARD RPC: Error processing message: {e}")
-        if 'request_id' in locals():
-            tb_client_edge2.publish(f"v1/devices/me/rpc/response/{request_id}", json.dumps({"status": "ERROR", "error": str(e)}), qos=1)
+        print(f"THINGSBOARD RPC (Edge2): Error processing message: {e}")
+        response_payload = {"status": "ERROR", "error": str(e)}
 
+    if tb_mqtt_client and tb_mqtt_client.is_connected():
+        tb_mqtt_client.publish(f"v1/devices/me/rpc/response/{request_id}", json.dumps(response_payload), qos=1)
 
-# --- Arduino 2 Serial Communication (connect_to_arduino2, send_command_to_arduino2, read_from_arduino2_thread_func) ---
-# These functions remain largely the same, ensuring data is published to MQTT and ThingsBoard.
-def connect_to_arduino2(): # Same
+# --- Arduino 2 Serial Communication ---
+def connect_to_arduino2():
     global arduino2_ser
-    while True:
-        try:
-            arduino2_ser = serial.Serial(SERIAL_PORT_ARDUINO2, BAUD_RATE, timeout=1)
-            print(f"SERIAL A2: Connected to Arduino 2 on {SERIAL_PORT_ARDUINO2}")
-            time.sleep(2)
-            arduino2_ser.flushInput()
-            return
-        except serial.SerialException as e:
-            print(f"SERIAL A2: Failed to connect: {e}. Retrying in 5s...")
-            arduino2_ser = None
-            time.sleep(5)
+    try:
+        if arduino2_ser and arduino2_ser.is_open: return True
+        print(f"SERIAL A2: Attempting to connect to Arduino 2 on {SERIAL_PORT_ARDUINO2}...")
+        if arduino2_ser: arduino2_ser.close()
+        temp_ser = serial.Serial(SERIAL_PORT_ARDUINO2, BAUD_RATE, timeout=1)
+        print(f"SERIAL A2: Successfully connected to Arduino 2 on {SERIAL_PORT_ARDUINO2}")
+        time.sleep(2); temp_ser.flushInput(); arduino2_ser = temp_ser; return True
+    except serial.SerialException as e:
+        print(f"SERIAL A2: Failed to connect: {e}."); arduino2_ser = None; return False
+    except Exception as ex:
+        print(f"SERIAL A2: Unexpected error during connection: {ex}"); arduino2_ser = None; return False
 
-def send_command_to_arduino2(command): # Same
+def send_command_to_arduino2(command):
     if arduino2_ser and arduino2_ser.is_open:
         with serial_lock_a2:
             try:
-                # print(f"SERIAL A2: Sending: {command}") # Can be noisy
+                # print(f"SERIAL A2: Sending: {command}")
                 arduino2_ser.write((command + '\n').encode('utf-8'))
-            except Exception as e:
-                print(f"SERIAL A2: Error writing: {e}")
+            except serial.SerialException as e: print(f"SERIAL A2: Error writing: {e}. Conn lost?.");
+            except Exception as e: print(f"SERIAL A2: Unexpected error writing: {e}")
     else:
-        print("SERIAL A2: Not connected.")
+        print(f"SERIAL A2: Not connected. Cannot send command: {command}")
 
-def read_from_arduino2_thread_func(): # Same
-    global latest_arduino2_data
-    connect_to_arduino2()
+def read_from_arduino2_thread_func():
+    global latest_arduino2_input_data, arduino2_ser
+    last_ir_code_sent_to_edge = None # Send IR code to Edge1 only on change
+    last_button_state_sent_to_edge = None # Send button state to Edge1 only on change
+
     while True:
-        if arduino2_ser and arduino2_ser.is_open:
-            try:
-                if arduino2_ser.in_waiting > 0:
-                    line = ""
-                    with serial_lock_a2:
-                        line = arduino2_ser.readline().decode('utf-8').rstrip()
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            latest_arduino2_data.update(data)
+        if not (arduino2_ser and arduino2_ser.is_open):
+            if not connect_to_arduino2(): time.sleep(5); continue
+        try:
+            if arduino2_ser.in_waiting > 0:
+                line = "";
+                with serial_lock_a2: line = arduino2_ser.readline().decode('utf-8').rstrip()
+                if line:
+                    try:
+                        data = json.loads(line)
+                        latest_arduino2_input_data.update(data) # Update local cache
 
-                            # Publish to Edge MQTT (for Edge 1 to consume)
-                            if mqtt_client_edge2 and "error" not in data:
-                                mqtt_client_edge2.publish(TOPIC_EDGE2_DATA_A2, json.dumps(data), qos=1)
+                        tb_payload = {}     # Data for this device's (Edge2) ThingsBoard telemetry
+                        edge_payload = {}   # Data to be sent to Edge1 via MQTT
 
-                            # Publish to ThingsBoard
-                            if tb_client_edge2 and "error" not in data:
-                                tb_client_edge2.publish("v1/devices/me/telemetry", json.dumps(data), qos=1)
+                        if "ir_code" in data and data["ir_code"]:
+                            tb_payload["ir_code_received"] = data["ir_code"] # Log all received IR to TB
+                            if data["ir_code"] != last_ir_code_sent_to_edge:
+                                edge_payload["ir_code"] = data["ir_code"]
+                                last_ir_code_sent_to_edge = data["ir_code"]
 
-                        except json.JSONDecodeError:
-                            print(f"SERIAL A2: JSON Decode Error: {line}")
-                        except Exception as e_json:
-                            print(f"SERIAL A2: Error processing JSON: {e_json}")
-            except serial.SerialException:
-                print("SERIAL A2: Error. Reconnecting...")
-                if arduino2_ser: arduino2_ser.close()
-                arduino2_ser = None
-                connect_to_arduino2()
-            except Exception as e_read:
-                print(f"SERIAL A2: Unexpected read error: {e_read}")
-                time.sleep(1)
-        else:
-            connect_to_arduino2()
+                        if "button_state" in data:
+                            tb_payload["button_state"] = data["button_state"] # Log all button states to TB
+                            if data["button_state"] != last_button_state_sent_to_edge:
+                                edge_payload["button_state"] = data["button_state"]
+                                last_button_state_sent_to_edge = data["button_state"]
+                        
+                        if "error" in data: # Log Arduino errors to TB
+                            tb_payload["arduino2_error"] = data["error"]
+
+                        # Publish to Edge MQTT (for Edge1 to consume) if there's new data
+                        if edge_payload and edge_mqtt_client and edge_mqtt_client.is_connected():
+                            edge_mqtt_client.publish(TOPIC_EDGE2_A2_INPUTS_PUB, json.dumps(edge_payload), qos=1)
+                        
+                        # Publish to ThingsBoard (this device's own telemetry) if there's data
+                        if tb_payload and tb_mqtt_client and tb_mqtt_client.is_connected():
+                            tb_mqtt_client.publish("v1/devices/me/telemetry", json.dumps(tb_payload), qos=1)
+
+                    except json.JSONDecodeError: print(f"SERIAL A2: JSON Decode Error: {line}"); latest_arduino2_input_data["error"] = "JSON Decode Error"
+                    except Exception as e_json: print(f"SERIAL A2: Error processing JSON ({line}): {e_json}"); latest_arduino2_input_data["error"] = f"Proc Error: {e_json}"
+        except serial.SerialException as e: print(f"SERIAL A2: Serial error during read: {e}. Disconnecting."); arduino2_ser.close(); arduino2_ser = None; continue
+        except AttributeError as ae: print(f"SERIAL A2: AttributeError (arduino2_ser None?): {ae}. Re-evaluating."); arduino2_ser = None; continue
+        except Exception as e_read: print(f"SERIAL A2: Unexpected read error: {e_read}"); arduino2_ser.close(); arduino2_ser = None; time.sleep(1); continue
         time.sleep(0.1)
 
 
 # --- API Integration Placeholder & Buzzer Control ---
 def check_for_api_alarm_trigger():
-    """
-    Placeholder function.
-    In a real scenario, this would check an API (e.g., Discord bot new message flag,
-    a message queue, or poll an API endpoint).
-    Returns True if an alarm condition from API is met.
-    """
-    # SIMULATE API TRIGGER - Replace with actual API check
-    # For testing, you could make this return True after some time or based on a file flag.
-    # Example: if os.path.exists("trigger_alarm.flag"): return True
+    if os.path.exists(DUMMY_API_TRIGGER_FILE):
+        try:
+            os.remove(DUMMY_API_TRIGGER_FILE)
+            print("API DUMMY: Trigger file found and removed.")
+            return True
+        except OSError as e:
+            print(f"API DUMMY: Error removing trigger file: {e}")
+            return False
     return False
 
 def api_alarm_thread_func():
-    """ Periodically checks the API and triggers buzzer if needed. """
+    # global actuator_states_a2 # Modifying elements
+    print("API Alarm Thread started. To trigger dummy API, create a file named 'trigger_buzzer_api.flag'")
     while True:
         if check_for_api_alarm_trigger():
-            print("API RULE: Alarm condition met. Triggering BUZZER on A2.")
-            send_command_to_arduino2("BUZZER:ON") # Or BUZZER_BEEP:1000 for a timed beep
-            # Potentially send an MQTT message to acknowledge or log this
-            # mqtt_client_edge2.publish(TOPIC_EDGE2_DATA_A2, json.dumps({"api_alarm_triggered": True}))
+            print("API RULE: Dummy Alarm condition met. Triggering BUZZER BEEP on A2 for 1s.")
+            send_command_to_arduino2("BUZZER_BEEP:1000") # Beep for 1 second
+            # A beep is momentary, so we don't set actuator_states_a2['buzzer_status'] to True permanently.
+            # If the API call should turn the buzzer ON until explicitly turned OFF:
+            # if not actuator_states_a2['buzzer_status']:
+            #     send_command_to_arduino2("BUZZER:ON")
+            #     actuator_states_a2['buzzer_status'] = True
+            #     publish_buzzer_status_to_thingsboard(True)
+            #
+            # Also send a telemetry point that the API alarm was triggered
+            if tb_mqtt_client and tb_mqtt_client.is_connected():
+                 tb_mqtt_client.publish("v1/devices/me/telemetry", json.dumps({"api_alarm_event": True, "timestamp": time.time()}), qos=1)
 
-            # Reset the trigger or wait before re-triggering
-            # if os.path.exists("trigger_alarm.flag"): os.remove("trigger_alarm.flag")
-            time.sleep(10) # Don't re-trigger immediately
-        else:
-            # Optional: send BUZZER:OFF if the API condition clears,
-            # but this might conflict with other buzzer uses (like high temp alarm).
-            # Careful design needed if buzzer has multiple triggers.
-            pass
-        time.sleep(5) # Check API every 5 seconds
+        time.sleep(3) # Check for API trigger every 3 seconds
 
 
-# --- Main Execution ---
 if __name__ == "__main__":
-    # Initialize Edge-to-Edge MQTT Client
-    mqtt_client_edge2 = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MQTT_CLIENT_ID_EDGE2)
-    mqtt_client_edge2.on_connect = on_connect_mqtt_edge
-    mqtt_client_edge2.on_message = on_message_mqtt_edge
-    try:
-        print(f"EDGE MQTT: Attempting to connect to {MQTT_BROKER_HOST} as {MQTT_CLIENT_ID_EDGE2}")
-        mqtt_client_edge2.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, 60)
-        mqtt_client_edge2.loop_start()
-    except Exception as e:
-        print(f"EDGE MQTT: Connection failed: {e}")
+    print("Starting Edge Device 2 (Refactored)...")
 
-    # Initialize ThingsBoard MQTT Client
-    tb_client_edge2 = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="tb_client_" + MQTT_CLIENT_ID_EDGE2)
-    tb_client_edge2.username_pw_set(THINGSBOARD_ACCESS_TOKEN_EDGE2)
-    tb_client_edge2.on_connect = on_connect_tb
-    tb_client_edge2.on_message = on_message_tb
+    # Edge-to-Edge MQTT Client
+    edge_mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MQTT_CLIENT_ID_EDGE2)
+    edge_mqtt_client.on_connect = on_connect_edge_mqtt
+    edge_mqtt_client.on_message = on_message_edge_mqtt
     try:
-        print(f"THINGSBOARD: Attempting to connect to {THINGSBOARD_HOST} with token {THINGSBOARD_ACCESS_TOKEN_EDGE2[:5]}...")
-        tb_client_edge2.connect(THINGSBOARD_HOST, THINGSBOARD_PORT, 60)
-        tb_client_edge2.loop_start()
-    except Exception as e:
-        print(f"THINGSBOARD: Connection failed: {e}")
+        print(f"EDGE MQTT: Connecting to {MQTT_BROKER_HOST} as {MQTT_CLIENT_ID_EDGE2}")
+        edge_mqtt_client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, 60)
+        edge_mqtt_client.loop_start()
+    except Exception as e: print(f"EDGE MQTT: Connection failed: {e}")
+
+    # ThingsBoard MQTT Client
+    tb_mqtt_client_id = f"tb_edge2_{MQTT_CLIENT_ID_EDGE2}"
+    tb_mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=tb_mqtt_client_id)
+    tb_mqtt_client.username_pw_set(THINGSBOARD_ACCESS_TOKEN_EDGE2)
+    tb_mqtt_client.on_connect = on_connect_tb
+    tb_mqtt_client.on_message = on_message_tb
+    try:
+        print(f"THINGSBOARD: Connecting to {THINGSBOARD_HOST} (token: {THINGSBOARD_ACCESS_TOKEN_EDGE2[:5]}...)")
+        tb_mqtt_client.connect(THINGSBOARD_HOST, THINGSBOARD_PORT, 60)
+        tb_mqtt_client.loop_start()
+    except Exception as e: print(f"THINGSBOARD: Connection failed: {e}")
 
     # Start threads
-    threading.Thread(target=read_from_arduino2_thread_func, daemon=True).start()
-    threading.Thread(target=api_alarm_thread_func, daemon=True).start() # Thread for API-triggered alarm
+    arduino_reader_thread = threading.Thread(target=read_from_arduino2_thread_func, daemon=True, name="Arduino2ReaderThread")
+    api_thread = threading.Thread(target=api_alarm_thread_func, daemon=True, name="ApiAlarmThread")
+    arduino_reader_thread.start()
+    api_thread.start()
 
-    print("Edge Device 2 (Rules Placeholder for API) started.")
+    print(f"Edge Device 2 (Refactored) now running.")
     print(f"Listening for Arduino 2 on {SERIAL_PORT_ARDUINO2}")
-    print(f"Connecting to MQTT broker {MQTT_BROKER_HOST} with client ID {MQTT_CLIENT_ID_EDGE2}")
-    print(f"Connecting to ThingsBoard {THINGSBOARD_HOST}")
+    print(f"To trigger dummy API alarm for buzzer, create file: {DUMMY_API_TRIGGER_FILE} in the script's directory.")
     print("Ctrl+C to exit.")
+
     try:
-        while True:
-            # Optional: print status
-            # print(f"A2: {latest_arduino2_data}")
-            time.sleep(10)
-    except KeyboardInterrupt:
-        print("\nExiting Edge Device 2...")
+        while True: time.sleep(10)
+    except KeyboardInterrupt: print("\nExiting Edge Device 2...")
     finally:
-        if arduino2_ser and arduino2_ser.is_open:
-            # send_command_to_arduino2("BUZZER:OFF") # Optional cleanup
-            arduino2_ser.close()
-        if mqtt_client_edge2:
-            mqtt_client_edge2.loop_stop()
-            mqtt_client_edge2.disconnect()
-        if tb_client_edge2:
-            tb_client_edge2.loop_stop()
-            tb_client_edge2.disconnect()
+        print("Cleaning up Edge Device 2 resources...")
+        if arduino2_ser and arduino2_ser.is_open: print("Closing Arduino 2 serial port."); arduino2_ser.close()
+        if edge_mqtt_client and edge_mqtt_client.is_connected(): print("Stopping Edge MQTT."); edge_mqtt_client.loop_stop(); edge_mqtt_client.disconnect()
+        if tb_mqtt_client and tb_mqtt_client.is_connected(): print("Stopping ThingsBoard MQTT."); tb_mqtt_client.loop_stop(); tb_mqtt_client.disconnect()
         print("Edge Device 2 stopped.")
