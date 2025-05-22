@@ -8,3 +8,8 @@ urllib3==2.4.0
 pymysql
 dotenv
 cryptography
+pytz
+python-dateutil
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
