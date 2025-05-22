@@ -100,6 +100,7 @@ def update_calendar_presence_status(is_at_home, reason_log=""):
 
     edge_payload = {"person_at_home": is_at_home}
     if mqtt_edge_client and mqtt_edge_client.is_connected():
+        print(f"MQTT EDGE: Publishing presence status: {edge_payload}")
         try: mqtt_edge_client.publish(TOPIC_CALENDAR_PRESENCE_STATUS_PUB, json.dumps(edge_payload), qos=1, retain=True)
         except Exception as e: print(f"MQTT EDGE ERROR: Failed to publish presence: {e}")
 

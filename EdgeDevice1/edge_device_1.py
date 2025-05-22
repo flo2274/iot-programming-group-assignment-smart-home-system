@@ -105,7 +105,7 @@ def on_connect_edge_mqtt(client, userdata, flags, rc, properties=None):
 def on_message_edge_mqtt(client, userdata, msg):
     global person_is_at_home # Declare global to modify it
     payload_str = msg.payload.decode('utf-8')
-    # print(f"EDGE MQTT Received on Edge1: Topic: {msg.topic}, Payload: {payload_str}")
+    print(f"EDGE MQTT Received on Edge1: Topic: {msg.topic}, Payload: {payload_str}")
 
     try:
         data = json.loads(payload_str)
@@ -128,6 +128,7 @@ def on_message_edge_mqtt(client, userdata, msg):
         
         # NEW: Handle presence status messages
         elif msg.topic == TOPIC_PRESENCE_STATUS_SUB:
+            print(f"PRESENCE MQTT (Edge1): Received presence status update: {payload_str}")
             if "person_at_home" in data:
                 with person_is_at_home_lock:
                     new_status = bool(data["person_at_home"])
