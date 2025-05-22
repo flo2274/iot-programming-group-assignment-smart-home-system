@@ -5,9 +5,10 @@ import time
 import json
 import threading
 import paho.mqtt.client as mqtt
+import database_utils # Import your new database utility module
 
 # --- Configuration ---
-SERIAL_PORT_ARDUINO1 = '/dev/tty.usbmodem11301' # Your correct port for Arduino 1
+SERIAL_PORT_ARDUINO1 = '/dev/tty.usbmodem11301' # YOUR CORRECT PORT for Arduino 1
 BAUD_RATE = 9600
 
 # Edge-to-Edge MQTT Broker
@@ -19,10 +20,10 @@ MQTT_CLIENT_ID_EDGE2_EXPECTED = "edge2-smart-home-inputs-22312" # Expected clien
 
 # MQTT Topics
 TOPIC_PREFIX = "iot_project/groupXY" # Common prefix for your project (change groupXY)
-TOPIC_EDGE1_A1_SENSORS = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE1}/arduino1/sensors" # For publishing A1 sensor data
-TOPIC_EDGE1_A1_ACTUATOR_STATUS = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE1}/arduino1/actuator_status" # For publishing A1 actuator states
-TOPIC_EDGE1_A1_CMD = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE1}/arduino1/cmd" # For subscribing to commands for A1
-TOPIC_EDGE2_A2_INPUTS = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE2_EXPECTED}/arduino2/inputs" # For subscribing to IR/Button data from A2
+TOPIC_EDGE1_A1_SENSORS = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE1}/arduino1/sensors"
+TOPIC_EDGE1_A1_ACTUATOR_STATUS = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE1}/arduino1/actuator_status"
+TOPIC_EDGE1_A1_CMD = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE1}/arduino1/cmd"
+TOPIC_EDGE2_A2_INPUTS = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE2_EXPECTED}/arduino2/inputs"
 
 # ThingsBoard Configuration
 THINGSBOARD_HOST = "mqtt.thingsboard.cloud" # Or your instance
@@ -38,7 +39,6 @@ LIGHT_THRESHOLD_LOW = 300
 LIGHT_THRESHOLD_HIGH = 700
 
 # --- State variables for actuators on Arduino 1 ---
-# These store the last known state of the actuators
 actuator_states = {
     "fan_status": False,    # True if ON, False if OFF
     "window_status": False, # True if OPEN, False if CLOSED
@@ -54,7 +54,11 @@ serial_lock_a1 = threading.Lock() # Lock for serial port access
 latest_arduino1_sensor_data = { # Cache for sensor data from Arduino 1
     "temperature": None, "humidity": None, "light": None, "error": None
 }
-# No global cache for A2 data needed here, processed directly in on_message.
+
+# --- Interval for database insertion ---
+DB_INSERT_INTERVAL = 60 # Seconds (e.g., insert data every 1 minute)
+last_db_insert_time = 0
+
 
 # --- Helper function to send actuator status to ThingsBoard AND Edge MQTT ---
 def publish_actuator_status(updated_statuses):
@@ -89,9 +93,7 @@ def on_connect_edge_mqtt(client, userdata, flags, rc, properties=None):
         print(f"EDGE MQTT: Failed to connect, return code {rc}")
 
 def on_message_edge_mqtt(client, userdata, msg):
-    # global actuator_states['light_status'] # No, modify actuator_states directly
     payload_str = msg.payload.decode('utf-8')
-    # print(f"EDGE MQTT Received: Topic: {msg.topic}, Payload: {payload_str}")
     try:
         data = json.loads(payload_str)
         if msg.topic == TOPIC_EDGE1_A1_CMD:
@@ -99,14 +101,10 @@ def on_message_edge_mqtt(client, userdata, msg):
         elif msg.topic == TOPIC_EDGE2_A2_INPUTS:
             # Process IR code from Edge 2
             if "ir_code" in data and data["ir_code"]:
-                # To prevent rapid re-triggering if IR remote button is held,
-                # Arduino 2 should ideally only send distinct codes or have a short cooldown.
-                # Here, we process every received distinct IR code.
                 process_ir_for_arduino1(data["ir_code"])
 
             # Process Button state from Edge 2
             if "button_state" in data and data["button_state"] == 1:
-                # Assuming button sends 1 on press, 0 on release.
                 # Act on press (rising edge).
                 # Edge 2 should ideally only send on state change.
                 print("Button on A2 pressed (received via MQTT), toggling Light on A1.")
@@ -121,13 +119,12 @@ def on_message_edge_mqtt(client, userdata, msg):
         print(f"EDGE MQTT: Error processing message: {e} on topic {msg.topic}")
 
 def handle_arduino1_command_from_mqtt(command_data):
-    # global actuator_states # Modifying elements of the dict
     telemetry_update = {}
     action_taken = False
 
     if "actuator" in command_data and "value" in command_data:
         actuator = command_data["actuator"].upper()
-        value_str = str(command_data["value"]) # Keep case for value if it matters (e.g. text)
+        value_str = str(command_data["value"])
 
         print(f"MQTT CMD for A1: Actuator: {actuator}, Value: {value_str}")
 
@@ -138,50 +135,43 @@ def handle_arduino1_command_from_mqtt(command_data):
                 actuator_states['light_status'] = new_state
                 telemetry_update['light_status'] = new_state
                 action_taken = True
-        elif actuator == "WINDOW": # Example "WINDOW":"90" or "WINDOW":"CLOSE"
-            if value_str.upper() == "OPEN": angle = 90
-            elif value_str.upper() == "CLOSE": angle = 0
-            else:
-                try: angle = int(value_str)
-                except ValueError: print(f"MQTT CMD Error: Invalid window angle '{value_str}'"); return
-
-            # Only act if state changes meaningfully
-            new_window_open_state = (angle > 0)
-            if actuator_states['window_status'] != new_window_open_state or \
-               (new_window_open_state and command_data.get("force_angle", False)): # Allow forcing angle even if state is "open"
-                send_command_to_arduino1(f"WINDOW:{angle}")
-                actuator_states['window_status'] = new_window_open_state
-                telemetry_update['window_status'] = new_window_open_state
+        elif actuator == "WINDOW":
+            try:
+                angle = int(value_str)
+                new_window_open_state = (angle > 0)
+                send_command_to_arduino1(f"WINDOW:{angle}") # Send command regardless to set specific angle
+                if actuator_states['window_status'] != new_window_open_state:
+                    actuator_states['window_status'] = new_window_open_state
+                    telemetry_update['window_status'] = new_window_open_state
+                elif not telemetry_update.get('window_status'): # if state same, still send if no other update
+                     telemetry_update['window_status'] = new_window_open_state
                 action_taken = True
-        elif actuator == "FAN": # Example "FAN":"ON" or "FAN":"OFF"
+            except ValueError: print(f"MQTT CMD Error: Invalid window angle '{value_str}'")
+        elif actuator == "FAN":
             new_state = (value_str.upper() == "ON")
             if actuator_states['fan_status'] != new_state:
                 if new_state:
-                    send_command_to_arduino1("FAN_SPEED:10") # Default speed
+                    send_command_to_arduino1("FAN_SPEED:10")
                     send_command_to_arduino1("FAN_STEPS:200")
                 else:
                     send_command_to_arduino1("FAN_OFF")
                 actuator_states['fan_status'] = new_state
                 telemetry_update['fan_status'] = new_state
                 action_taken = True
-        # Add FAN_SPEED, FAN_STEPS if direct control via MQTT is needed
-        # Ensure they update actuator_states['fan_status'] appropriately
+        # Add other actuators like FAN_SPEED, FAN_STEPS if needed
 
     elif "raw_command" in command_data:
         print(f"MQTT RAW CMD for A1: {command_data['raw_command']}")
         send_command_to_arduino1(command_data["raw_command"])
-        action_taken = True # Assume raw command causes a state change that needs reporting
-        # For raw commands, it's hard to update specific actuator_states.
-        # Consider sending all current actuator_states if a raw command is used,
-        # or avoid raw commands for stateful actuators.
-        # telemetry_update.update(actuator_states) # Send all known states
+        action_taken = True
+        # Difficult to update specific states from raw_command, consider sending all current states
+        # telemetry_update.update(actuator_states)
 
     if action_taken and telemetry_update:
         publish_actuator_status(telemetry_update)
 
 
 def process_ir_for_arduino1(ir_code_hex):
-    # global actuator_states # Modifying elements
     telemetry_update = {}
     action_taken = False
     code = ir_code_hex.upper()
@@ -208,19 +198,7 @@ def process_ir_for_arduino1(ir_code_hex):
         actuator_states['fan_status'] = new_fan_state
         telemetry_update['fan_status'] = new_fan_state
         action_taken = True
-    # Example for Window (if IR controls window)
-    # elif code == "0XFFE01F": # Example: Window Open
-    #     if not actuator_states['window_status']: # Only if currently closed
-    #         send_command_to_arduino1("WINDOW:90")
-    #         actuator_states['window_status'] = True
-    #         telemetry_update['window_status'] = True
-    #         action_taken = True
-    # elif code == "0XFF906F": # Example: Window Close
-    #     if actuator_states['window_status']: # Only if currently open
-    #         send_command_to_arduino1("WINDOW:0")
-    #         actuator_states['window_status'] = False
-    #         telemetry_update['window_status'] = False
-    #         action_taken = True
+    # Add more IR mappings if needed
     else:
         print(f"IR code {code} not mapped to an action for Arduino 1.")
 
@@ -237,11 +215,10 @@ def on_connect_tb(client, userdata, flags, rc, properties=None):
         print(f"THINGSBOARD: Failed to connect (Edge1), return code {rc}")
 
 def on_message_tb(client, userdata, msg):
-    # global actuator_states # Modifying elements
     print(f"THINGSBOARD RPC Received (Edge1): Topic: {msg.topic}, Payload: {msg.payload.decode()}")
     request_id = msg.topic.split('/')[-1]
     telemetry_update = {}
-    response_payload = {"status": "OK"} # Default OK response
+    response_payload = {"status": "OK"}
 
     try:
         data = json.loads(msg.payload)
@@ -259,11 +236,12 @@ def on_message_tb(client, userdata, msg):
             try:
                 angle = int(params)
                 new_window_open_state = (angle > 0)
-                # Send command even if state is same, to ensure desired angle
                 send_command_to_arduino1(f"WINDOW:{angle}")
                 if actuator_states['window_status'] != new_window_open_state:
                     actuator_states['window_status'] = new_window_open_state
                     telemetry_update['window_status'] = new_window_open_state
+                elif not telemetry_update.get('window_status'): # if state same, still send if no other update
+                     telemetry_update['window_status'] = new_window_open_state
                 response_payload["window_angle_set_to"] = angle
             except ValueError:
                 response_payload = {"status": "ERROR", "error": "Invalid angle parameter"}
@@ -281,7 +259,7 @@ def on_message_tb(client, userdata, msg):
         else:
             response_payload = {"status": "ERROR", "error": f"Unknown RPC method: {method}"}
 
-        if telemetry_update: # Send only if a state actually changed and was recorded
+        if telemetry_update:
             publish_actuator_status(telemetry_update)
 
     except Exception as e:
@@ -312,13 +290,13 @@ def send_command_to_arduino1(command):
             try:
                 # print(f"SERIAL A1: Sending: {command}")
                 arduino1_ser.write((command + '\n').encode('utf-8'))
-            except serial.SerialException as e: print(f"SERIAL A1: Error writing: {e}. Conn lost? Consider reconnect.");
+            except serial.SerialException as e: print(f"SERIAL A1: Error writing: {e}. Conn lost?.");
             except Exception as e: print(f"SERIAL A1: Unexpected error writing: {e}")
     else:
         print(f"SERIAL A1: Not connected. Cannot send command: {command}")
 
 def read_from_arduino1_thread_func():
-    global latest_arduino1_sensor_data, arduino1_ser
+    global latest_arduino1_sensor_data, arduino1_ser, last_db_insert_time
     while True:
         if not (arduino1_ser and arduino1_ser.is_open):
             if not connect_to_arduino1(): time.sleep(5); continue
@@ -329,12 +307,32 @@ def read_from_arduino1_thread_func():
                 if line:
                     try:
                         data = json.loads(line); latest_arduino1_sensor_data.update(data)
-                        # Send raw sensor data to Edge MQTT (if other edge devices need it)
-                        if edge_mqtt_client and edge_mqtt_client.is_connected() and "error" not in data:
-                            edge_mqtt_client.publish(TOPIC_EDGE1_A1_SENSORS, json.dumps(data), qos=1)
-                        # Send raw sensor data to ThingsBoard
-                        if tb_mqtt_client and tb_mqtt_client.is_connected() and "error" not in data:
-                            tb_mqtt_client.publish("v1/devices/me/telemetry", json.dumps(data), qos=1)
+                        if "error" not in data:
+                            # Publish raw sensor data to Edge MQTT
+                            if edge_mqtt_client and edge_mqtt_client.is_connected():
+                                edge_mqtt_client.publish(TOPIC_EDGE1_A1_SENSORS, json.dumps(data), qos=1)
+                            # Publish raw sensor data to ThingsBoard
+                            if tb_mqtt_client and tb_mqtt_client.is_connected():
+                                tb_mqtt_client.publish("v1/devices/me/telemetry", json.dumps(data), qos=1)
+
+                            # --- DATABASE INSERTION LOGIC ---
+                            current_time = time.time()
+                            if (current_time - last_db_insert_time > DB_INSERT_INTERVAL):
+                                temp = latest_arduino1_sensor_data.get("temperature")
+                                hum = latest_arduino1_sensor_data.get("humidity")
+                                light = latest_arduino1_sensor_data.get("light")
+                                if None not in [temp, hum, light]:
+                                    print(f"DB WRITE: Interval. Writing: T={temp}, H={hum}, L={light}")
+                                    try:
+                                        database_utils.insert_sensor_data(temp, hum, light)
+                                        last_db_insert_time = current_time
+                                    except Exception as db_e: print(f"DB WRITE: Failed: {db_e}")
+                                else: print("DB WRITE: Skip due to missing sensor values.")
+                        else: # Handle Arduino error string
+                            print(f"SERIAL A1: Received error from Arduino: {data.get('error')}")
+                            latest_arduino1_sensor_data["error"] = data.get("error")
+
+
                     except json.JSONDecodeError: print(f"SERIAL A1: JSON Decode Error: {line}"); latest_arduino1_sensor_data["error"] = "JSON Decode Error"
                     except Exception as e_json: print(f"SERIAL A1: Error processing JSON ({line}): {e_json}"); latest_arduino1_sensor_data["error"] = f"Proc Error: {e_json}"
         except serial.SerialException as e: print(f"SERIAL A1: Serial error during read: {e}. Disconnecting."); arduino1_ser.close(); arduino1_ser = None; continue
@@ -344,14 +342,13 @@ def read_from_arduino1_thread_func():
 
 # --- Rules Engine Logic ---
 def apply_rules_arduino1():
-    # global actuator_states # Modifying elements
-    telemetry_update = {} # Collect status changes for a single publish
+    telemetry_update = {}
 
     temp = latest_arduino1_sensor_data.get("temperature")
     humidity = latest_arduino1_sensor_data.get("humidity")
     light_level = latest_arduino1_sensor_data.get("light")
 
-    # Rule: Temperature for Fan (with Hysteresis)
+    # Rule: Temperature for Fan
     if temp is not None:
         if temp > TEMP_THRESHOLD_FAN_ON and not actuator_states['fan_status']:
             print(f"RULE A1: Temp ({temp}°C) > {TEMP_THRESHOLD_FAN_ON}°C. Turning FAN ON.")
@@ -362,7 +359,7 @@ def apply_rules_arduino1():
             send_command_to_arduino1("FAN_OFF")
             actuator_states['fan_status'] = False; telemetry_update['fan_status'] = False
 
-    # Rule: Humidity for Window (with Hysteresis)
+    # Rule: Humidity for Window
     if humidity is not None:
         if humidity > HUMIDITY_THRESHOLD_WINDOW_OPEN and not actuator_states['window_status']:
             print(f"RULE A1: Humidity ({humidity}%) > {HUMIDITY_THRESHOLD_WINDOW_OPEN}%. Opening WINDOW.")
@@ -373,7 +370,7 @@ def apply_rules_arduino1():
             send_command_to_arduino1("WINDOW:0")
             actuator_states['window_status'] = False; telemetry_update['window_status'] = False
 
-    # Rule: Light level for LED (with Hysteresis)
+    # Rule: Light level for LED
     if light_level is not None:
         if light_level < LIGHT_THRESHOLD_LOW and not actuator_states['light_status']:
             print(f"RULE A1: Light ({light_level}) < {LIGHT_THRESHOLD_LOW}. Turning LIGHT ON.")
@@ -384,7 +381,7 @@ def apply_rules_arduino1():
             send_command_to_arduino1("LED:OFF")
             actuator_states['light_status'] = False; telemetry_update['light_status'] = False
 
-    if telemetry_update: # Send only if any rule caused a state change
+    if telemetry_update:
         publish_actuator_status(telemetry_update)
 
 
@@ -395,7 +392,17 @@ def rule_engine_thread_func():
 
 
 if __name__ == "__main__":
-    print("Starting Edge Device 1 (Refactored)...")
+    print("Starting Edge Device 1 (Refactored with DB)...")
+
+    # ---- INITIALIZE DATABASE SCHEMA HERE ----
+    print("Initializing database schema...")
+    if database_utils.initialize_database_schema(): # Call the function from database_utils
+        print("Database schema initialization successful or table already exists.")
+    else:
+        print("CRITICAL: Database schema initialization failed. Check DB connection and permissions.")
+        # import sys
+        # sys.exit("Exiting due to database initialization failure.") # Optional: exit if DB is critical
+    # ---- END OF DATABASE INITIALIZATION ----
 
     # Edge-to-Edge MQTT Client
     edge_mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MQTT_CLIENT_ID_EDGE1)
@@ -408,7 +415,7 @@ if __name__ == "__main__":
     except Exception as e: print(f"EDGE MQTT: Connection failed during setup: {e}")
 
     # ThingsBoard MQTT Client
-    tb_mqtt_client_id = f"tb_edge1_{MQTT_CLIENT_ID_EDGE1}" # Ensure unique client ID for TB broker
+    tb_mqtt_client_id = f"tb_edge1_{MQTT_CLIENT_ID_EDGE1}"
     tb_mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=tb_mqtt_client_id)
     tb_mqtt_client.username_pw_set(THINGSBOARD_ACCESS_TOKEN_EDGE1)
     tb_mqtt_client.on_connect = on_connect_tb
@@ -425,8 +432,9 @@ if __name__ == "__main__":
     arduino_reader_thread.start()
     rules_thread.start()
 
-    print(f"Edge Device 1 (Refactored) now running.")
+    print(f"Edge Device 1 (Refactored with DB) now running.")
     print(f"Listening for Arduino 1 on {SERIAL_PORT_ARDUINO1}")
+    print(f"Database inserts will occur approx. every {DB_INSERT_INTERVAL} seconds for valid data.")
     print("Ctrl+C to exit.")
 
     try:
