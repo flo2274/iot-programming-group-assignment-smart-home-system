@@ -25,7 +25,7 @@ TOPIC_EDGE1_A1_ACTUATOR_STATUS = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE1}/arduino
 TOPIC_EDGE1_A1_CMD = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE1}/arduino1/cmd"
 TOPIC_EDGE2_A2_INPUTS = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE2_EXPECTED}/arduino2/inputs" # For IR/Button from A2
 # NEW: Subscribe to presence status from Edge Device 2 (calendar based)
-TOPIC_PRESENCE_STATUS_SUB = f"{TOPIC_PREFIX}/home/presence_status"
+TOPIC_PRESENCE_STATUS_SUB = f"{TOPIC_PREFIX}/home/calendar_presence"
 
 
 # ThingsBoard Configuration
