@@ -34,7 +34,7 @@ THINGSBOARD_PORT = 1883
 THINGSBOARD_ACCESS_TOKEN_EDGE1 = "OkJ7XmIBLCRcpDcDJhJq" # Your valid token
 
 # --- Rule Thresholds ---
-TEMP_THRESHOLD_FAN_ON = 25.0
+TEMP_THRESHOLD_FAN_ON = 24.0
 TEMP_THRESHOLD_FAN_OFF = 24.0
 HUMIDITY_THRESHOLD_WINDOW_OPEN = 65.0
 HUMIDITY_THRESHOLD_WINDOW_CLOSE = 60.0
@@ -402,7 +402,7 @@ def apply_rules_arduino1():
     if temp is not None:
         if temp > TEMP_THRESHOLD_FAN_ON and not actuator_states['fan_status']:
             print(f"RULE A1: Temp ({temp}°C) > {TEMP_THRESHOLD_FAN_ON}°C. Turning FAN ON.")
-            send_command_to_arduino1("FAN_SPEED:10"); send_command_to_arduino1("FAN_STEPS:200")
+            send_command_to_arduino1("FAN_ON")
             actuator_states['fan_status'] = True; telemetry_update['fan_status'] = True
         elif temp < TEMP_THRESHOLD_FAN_OFF and actuator_states['fan_status']:
             print(f"RULE A1: Temp ({temp}°C) < {TEMP_THRESHOLD_FAN_OFF}°C. Turning FAN OFF.")

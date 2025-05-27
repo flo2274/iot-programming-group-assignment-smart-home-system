@@ -2,7 +2,6 @@
 
 #include <DHT.h>
 #include <Servo.h>
-#include <Stepper.h>
 
 // --- Configuration ---
 // DHT11 Sensor
@@ -20,10 +19,8 @@ DHT dht(DHTPIN, DHTTYPE);
 #define SERVO_PIN 5
 Servo windowServo;
 
-// Stepper Motor (Fan - e.g., 28BYJ-48 with ULN2003 driver)
-const int stepsPerRevolution = 2048; // Change for your motor
-// Initialize the stepper library on pins 5, 6, 7, 8:
-Stepper fanStepper(stepsPerRevolution, 5, 6, 7, 8); // IN1, IN3, IN2, IN4 for ULN2003
+// DC Motor (Fan) - simple on/off pin
+#define FAN_PIN 8
 
 unsigned long lastSensorReadTime = 0;
 const long sensorReadInterval = 2000; // Read sensors every 2 seconds
@@ -38,7 +35,8 @@ void setup() {
   windowServo.attach(SERVO_PIN);
   windowServo.write(0); // Window closed initially (0 degrees)
 
-  fanStepper.setSpeed(10); // Default fan speed
+  pinMode(FAN_PIN, OUTPUT);
+  digitalWrite(FAN_PIN, LOW); // Fan off initially
 
   Serial.println("Arduino 1 Ready");
 }
@@ -86,29 +84,11 @@ void loop() {
       int angle = command.substring(7).toInt();
       windowServo.write(constrain(angle, 0, 180)); // Servo typically 0-180 degrees
     }
-    // --- Stepper (Fan) Control ---
-    else if (command.startsWith("FAN_SPEED:")) { // e.g., FAN_SPEED:15 (RPM)
-      int speed = command.substring(10).toInt();
-      fanStepper.setSpeed(max(1, speed)); // Speed must be > 0
-    } else if (command.startsWith("FAN_STEPS:")) { // e.g., FAN_STEPS:100 (positive for one way, negative for other)
-      int steps = command.substring(10).toInt();
-      if (steps != 0) { // Only step if steps is non-zero
-          fanStepper.step(steps);
-      }
-    } else if (command == "FAN_ON") { // Simplified ON command - needs a speed to be set prior
-        // This requires edge to remember last speed or send speed command first
-        // For simplicity, let's assume it just means run at current set speed indefinitely
-        // To make it run, you'd need a loop here or continuous small steps.
-        // A better "FAN_ON" would be handled by the edge sending continuous "FAN_STEPS"
-        // Or Arduino having a state machine. For "no logic", we'll just make it step a bit.
-        // fanStepper.step(stepsPerRevolution / 4); // Example: run for 1/4 revolution
-        Serial.println("{\"info\":\"FAN_ON received, set speed and steps separately\"}");
+    // --- Fan (DC Motor) Control ---
+    else if (command == "FAN_ON") {
+      digitalWrite(FAN_PIN, HIGH); // Turn fan on
     } else if (command == "FAN_OFF") {
-        // Stepper motors hold position when not stepping if powered.
-        // To truly turn "off" (no power to coils), you'd need to control driver enable pin
-        // or set speed to 0 and send no step commands.
-        fanStepper.setSpeed(1); // Set to a very low speed (effectively stops it unless steps are sent)
-        Serial.println("{\"info\":\"FAN_OFF received, speed set low\"}");
+      digitalWrite(FAN_PIN, LOW);  // Turn fan off
     }
   }
 }
