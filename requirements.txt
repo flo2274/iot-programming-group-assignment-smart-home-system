@@ -1,0 +1,15 @@
+certifi==2025.4.26
+charset-normalizer==3.4.2
+idna==3.10
+paho-mqtt==2.1.0
+pyserial==3.5
+requests==2.32.3
+urllib3==2.4.0
+pymysql
+dotenv
+cryptography
+pytz
+python-dateutil
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
