@@ -75,10 +75,21 @@ person_is_at_home_lock = threading.Lock()
 DB_INSERT_INTERVAL = 60 # Seconds (e.g., insert data every 1 minute)
 last_db_insert_time = 0
 
-# --- LED Override State ---
-led_override_active = False
+# --- LED Override State (from previous implementation for button on A2) ---
+led_override_active = False # This was for the A2 button controlling A1 LED
 led_override_end_time = 0
-led_override_lock = threading.Lock() # To protect these shared variables
+led_override_lock = threading.RLock()
+
+# --- IR Override States for A1 Fan and Window ---
+ir_override_duration_seconds = 300 # 5 minutes, configurable
+
+fan_ir_override_active = False
+fan_ir_override_end_time = 0
+fan_override_lock = threading.RLock()
+
+window_ir_override_active = False
+window_ir_override_end_time = 0
+window_override_lock = threading.RLock()
 
 
 # --- Helper function to send actuator status to ThingsBoard AND Edge MQTT ---
@@ -189,52 +200,68 @@ def on_message_edge_mqtt(client, userdata, msg):
             # --- Handle IR events for Arduino1 actuators ---
             elif ir_event_type == "FAN_ON":
                 print("EDGE MQTT (Edge1): IR Event - FAN_ON for Arduino1.")
-                if not actuator_states.get('fan_status', False):
-                    send_command_to_arduino1("FAN_ON") # Or FAN_SPEED:X, FAN_STEPS:Y if needed
-                    actuator_states['fan_status'] = True
-                    a1_telemetry_update['fan_status'] = True
-                    a1_telemetry_update['arduino1_fan_ir_triggered_state'] = 1
-                    a1_actuator_command_sent = True
-                else:
-                    print("EDGE MQTT (Edge1): Arduino1 Fan already ON. No action.")
+                with fan_override_lock:
+                    if not actuator_states.get('fan_status', False):
+                        send_command_to_arduino1("FAN_ON") 
+                        actuator_states['fan_status'] = True
+                        a1_telemetry_update['fan_status'] = True
+                        a1_telemetry_update['arduino1_fan_ir_triggered_state'] = 1
+                        fan_ir_override_active = True
+                        fan_ir_override_end_time = time.time() + ir_override_duration_seconds
+                        print(f"EDGE MQTT (Edge1): Fan IR override activated for {ir_override_duration_seconds}s.")
+                        a1_actuator_command_sent = True
+                    else:
+                        print("EDGE MQTT (Edge1): Arduino1 Fan already ON. IR Override NOT re-activated if state unchanged.")
             
             elif ir_event_type == "FAN_OFF":
                 print("EDGE MQTT (Edge1): IR Event - FAN_OFF for Arduino1.")
-                if actuator_states.get('fan_status', False):
-                    send_command_to_arduino1("FAN_OFF")
-                    actuator_states['fan_status'] = False
-                    a1_telemetry_update['fan_status'] = False
-                    a1_telemetry_update['arduino1_fan_ir_triggered_state'] = 0
-                    a1_actuator_command_sent = True
-                else:
-                    print("EDGE MQTT (Edge1): Arduino1 Fan already OFF. No action.")
+                with fan_override_lock:
+                    if actuator_states.get('fan_status', False):
+                        send_command_to_arduino1("FAN_OFF")
+                        actuator_states['fan_status'] = False
+                        a1_telemetry_update['fan_status'] = False
+                        a1_telemetry_update['arduino1_fan_ir_triggered_state'] = 0
+                        fan_ir_override_active = True
+                        fan_ir_override_end_time = time.time() + ir_override_duration_seconds
+                        print(f"EDGE MQTT (Edge1): Fan IR override activated for {ir_override_duration_seconds}s.")
+                        a1_actuator_command_sent = True
+                    else:
+                        print("EDGE MQTT (Edge1): Arduino1 Fan already OFF. IR Override NOT re-activated if state unchanged.")
 
             elif ir_event_type == "WINDOW_OPEN":
                 print("EDGE MQTT (Edge1): IR Event - WINDOW_OPEN for Arduino1.")
                 with person_is_at_home_lock: local_person_is_at_home = person_is_at_home
                 if local_person_is_at_home:
-                    if not actuator_states.get('window_status', False):
-                        send_command_to_arduino1("WINDOW:90") # Assuming 90 is open
-                        actuator_states['window_status'] = True
-                        a1_telemetry_update['window_status'] = True
-                        a1_telemetry_update['arduino1_window_ir_triggered_state'] = 1
-                        a1_actuator_command_sent = True
-                    else:
-                        print("EDGE MQTT (Edge1): Arduino1 Window already OPEN. No action.")
+                    with window_override_lock:
+                        if not actuator_states.get('window_status', False):
+                            send_command_to_arduino1("WINDOW:90") 
+                            actuator_states['window_status'] = True
+                            a1_telemetry_update['window_status'] = True
+                            a1_telemetry_update['arduino1_window_ir_triggered_state'] = 1
+                            window_ir_override_active = True
+                            window_ir_override_end_time = time.time() + ir_override_duration_seconds
+                            print(f"EDGE MQTT (Edge1): Window IR override activated for {ir_override_duration_seconds}s.")
+                            a1_actuator_command_sent = True
+                        else:
+                            print("EDGE MQTT (Edge1): Arduino1 Window already OPEN. IR Override NOT re-activated if state unchanged.")
                 else:
                     print("EDGE MQTT (Edge1): Person not at home. WINDOW_OPEN IR command for Arduino1 ignored.")
-                    a1_telemetry_update['arduino1_window_ir_ignored_due_to_presence'] = 1 # Optional telemetry
+                    a1_telemetry_update['arduino1_window_ir_ignored_due_to_presence'] = 1 
             
             elif ir_event_type == "WINDOW_CLOSED":
                 print("EDGE MQTT (Edge1): IR Event - WINDOW_CLOSED for Arduino1.")
-                if actuator_states.get('window_status', False):
-                    send_command_to_arduino1("WINDOW:0") # Assuming 0 is closed
-                    actuator_states['window_status'] = False
-                    a1_telemetry_update['window_status'] = False
-                    a1_telemetry_update['arduino1_window_ir_triggered_state'] = 0
-                    a1_actuator_command_sent = True
-                else:
-                    print("EDGE MQTT (Edge1): Arduino1 Window already CLOSED. No action.")
+                with window_override_lock:
+                    if actuator_states.get('window_status', False):
+                        send_command_to_arduino1("WINDOW:0") 
+                        actuator_states['window_status'] = False
+                        a1_telemetry_update['window_status'] = False
+                        a1_telemetry_update['arduino1_window_ir_triggered_state'] = 0
+                        window_ir_override_active = True
+                        window_ir_override_end_time = time.time() + ir_override_duration_seconds
+                        print(f"EDGE MQTT (Edge1): Window IR override activated for {ir_override_duration_seconds}s.")
+                        a1_actuator_command_sent = True
+                    else:
+                        print("EDGE MQTT (Edge1): Arduino1 Window already CLOSED. IR Override NOT re-activated if state unchanged.")
             
             else:
                 print(f"EDGE MQTT (Edge1): Unknown or unhandled ir_event_type for A1/A2 logic: {ir_event_type}")
@@ -265,6 +292,8 @@ def on_message_edge_mqtt(client, userdata, msg):
 
 def handle_arduino1_command_from_mqtt(command_data):
     global led_override_active # Access to potentially modify override (e.g., manual cmd cancels it)
+    global fan_ir_override_active # For manual MQTT commands to cancel IR override
+    global window_ir_override_active # For manual MQTT commands to cancel IR override
     telemetry_update = {}
     action_taken = False
 
@@ -275,11 +304,11 @@ def handle_arduino1_command_from_mqtt(command_data):
         # print(f"MQTT CMD for A1: Actuator: {actuator}, Value: {value_str}")
 
         if actuator == "LED":
-            # Optional: Decide if manual MQTT command should cancel the sensor override
-            # with led_override_lock:
-            #     if led_override_active:
-            #         print("MQTT CMD (Edge1): Manual LED command received, cancelling sensor override.")
-            #         led_override_active = False
+            # Optional: Decide if manual MQTT command should cancel the A2 button LED override
+            with led_override_lock:
+                if led_override_active: # This is the override from A2 button for A1 LED
+                    print("MQTT CMD (Edge1): Manual A1 LED command received, cancelling A2 button override.")
+                    led_override_active = False
             new_state = (value_str.upper() == "ON")
             if actuator_states['light_status'] != new_state:
                 send_command_to_arduino1(f"LED:{'ON' if new_state else 'OFF'}")
@@ -288,6 +317,10 @@ def handle_arduino1_command_from_mqtt(command_data):
                 action_taken = True
         elif actuator == "WINDOW":
             try:
+                with window_override_lock: # Cancel IR override if manual MQTT command for window
+                    if window_ir_override_active:
+                        print("MQTT CMD (Edge1): Manual Window command received, cancelling IR override.")
+                        window_ir_override_active = False
                 if value_str.upper() == "OPEN": angle = 90
                 elif value_str.upper() == "CLOSE": angle = 0
                 else: angle = int(value_str)
@@ -303,6 +336,10 @@ def handle_arduino1_command_from_mqtt(command_data):
             except ValueError: print(f"MQTT CMD Error: Invalid window angle/command '{value_str}'")
         elif actuator == "FAN":
             new_state = (value_str.upper() == "ON")
+            with fan_override_lock: # Cancel IR override if manual MQTT command for fan
+                if fan_ir_override_active:
+                    print("MQTT CMD (Edge1): Manual Fan command received, cancelling IR override.")
+                    fan_ir_override_active = False
             if actuator_states['fan_status'] != new_state:
                 if new_state:
                     send_command_to_arduino1("FAN_ON")
@@ -369,7 +406,9 @@ def on_connect_tb(client, userdata, flags, rc, properties=None):
         print(f"THINGSBOARD: Failed to connect (Edge1), return code {rc}")
 
 def on_message_tb(client, userdata, msg):
-    global led_override_active # Access to potentially modify override
+    global led_override_active # Access to potentially modify A2 button LED override
+    global fan_ir_override_active # For RPC commands to cancel IR override
+    global window_ir_override_active # For RPC commands to cancel IR override
     request_id = msg.topic.split('/')[-1]
     telemetry_update = {}
     response_payload = {"status": "OK"}
@@ -380,11 +419,11 @@ def on_message_tb(client, userdata, msg):
         params = data.get("params")
 
         if method == "setLedState":
-            # Optional: Decide if RPC command should cancel the sensor override
-            # with led_override_lock:
-            #     if led_override_active:
-            #         print("RPC (Edge1): Manual LED command received, cancelling sensor override.")
-            #         led_override_active = False
+            # Optional: Decide if RPC command should cancel the A2 button LED sensor override
+            with led_override_lock:
+                if led_override_active:
+                    print("RPC (Edge1): Manual LED command (via RPC) received, cancelling A2 button override.")
+                    led_override_active = False
             new_state = bool(params)
             if actuator_states['light_status'] != new_state:
                 send_command_to_arduino1(f"LED:{'ON' if new_state else 'OFF'}")
@@ -393,6 +432,10 @@ def on_message_tb(client, userdata, msg):
             response_payload["led_state_set_to"] = new_state
         elif method == "setWindowAngle":
             try:
+                with window_override_lock: # Cancel IR override if RPC for window
+                    if window_ir_override_active:
+                        print("RPC (Edge1): Manual Window command (via RPC) received, cancelling IR override.")
+                        window_ir_override_active = False
                 angle = 0
                 if isinstance(params, bool): angle = 90 if params else 0
                 elif isinstance(params, (int, float)): angle = int(params)
@@ -412,6 +455,10 @@ def on_message_tb(client, userdata, msg):
                 response_payload = {"status": "ERROR", "error": f"Invalid angle/state parameter: {e}"}
         elif method == "setFanState":
             new_fan_state = bool(params)
+            with fan_override_lock: # Cancel IR override if RPC for fan
+                if fan_ir_override_active:
+                    print("RPC (Edge1): Manual Fan command (via RPC) received, cancelling IR override.")
+                    fan_ir_override_active = False
             if actuator_states['fan_status'] != new_fan_state:
                 if new_fan_state:
                     send_command_to_arduino1("FAN_SPEED:10"); send_command_to_arduino1("FAN_STEPS:100")
@@ -498,7 +545,9 @@ def read_from_arduino1_thread_func():
 
 # --- Rules Engine Logic ---
 def apply_rules_arduino1():
-    global person_is_at_home, led_override_active, led_override_end_time # Ensure access to LED override state
+    global person_is_at_home, led_override_active, led_override_end_time # A2 button LED override
+    global fan_ir_override_active, fan_ir_override_end_time, fan_override_lock
+    global window_ir_override_active, window_ir_override_end_time, window_override_lock
     telemetry_update = {}
 
     temp = latest_arduino1_sensor_data.get("temperature")
@@ -507,30 +556,54 @@ def apply_rules_arduino1():
 
     # Rule: Temperature for Fan
     if temp is not None:
-        if temp > TEMP_THRESHOLD_FAN_ON and not actuator_states['fan_status']:
-            print(f"RULE A1: Temp ({temp}°C) > {TEMP_THRESHOLD_FAN_ON}°C. Turning FAN ON.")
-            send_command_to_arduino1("FAN_ON")
-            actuator_states['fan_status'] = True; telemetry_update['fan_status'] = True
-        elif temp <= TEMP_THRESHOLD_FAN_OFF and actuator_states['fan_status']: # Changed to <= for clarity
-            print(f"RULE A1: Temp ({temp}°C) <= {TEMP_THRESHOLD_FAN_OFF}°C. Turning FAN OFF.")
-            send_command_to_arduino1("FAN_OFF")
-            actuator_states['fan_status'] = False; telemetry_update['fan_status'] = False
+        apply_fan_sensor_rule = True
+        with fan_override_lock:
+            if fan_ir_override_active:
+                if time.time() < fan_ir_override_end_time:
+                    remaining_time = fan_ir_override_end_time - time.time()
+                    print(f"RULE A1: Fan sensor rule skipped. IR override active for {remaining_time:.0f}s. Current state: {'ON' if actuator_states.get('fan_status') else 'OFF'}.")
+                    apply_fan_sensor_rule = False
+                else:
+                    print("RULE A1: Fan IR override expired. Resuming sensor-based control.")
+                    fan_ir_override_active = False
+        
+        if apply_fan_sensor_rule:
+            if temp > TEMP_THRESHOLD_FAN_ON and not actuator_states.get('fan_status', False):
+                print(f"RULE A1: Temp ({temp}°C) > {TEMP_THRESHOLD_FAN_ON}°C. Turning FAN ON.")
+                send_command_to_arduino1("FAN_ON")
+                actuator_states['fan_status'] = True; telemetry_update['fan_status'] = True
+            elif temp <= TEMP_THRESHOLD_FAN_OFF and actuator_states['fan_status']: # Changed to <= for clarity
+                print(f"RULE A1: Temp ({temp}°C) <= {TEMP_THRESHOLD_FAN_OFF}°C. Turning FAN OFF.")
+                send_command_to_arduino1("FAN_OFF")
+                actuator_states['fan_status'] = False; telemetry_update['fan_status'] = False
 
     # Rule: Humidity for Window (NOW WITH PRESENCE CHECK)
     if humidity is not None:
-        with person_is_at_home_lock: local_person_is_at_home = person_is_at_home
+        apply_window_sensor_rule = True
+        with window_override_lock:
+            if window_ir_override_active:
+                if time.time() < window_ir_override_end_time:
+                    remaining_time = window_ir_override_end_time - time.time()
+                    print(f"RULE A1: Window sensor rule skipped. IR override active for {remaining_time:.0f}s. Current state: {'OPEN' if actuator_states.get('window_status') else 'CLOSED'}.")
+                    apply_window_sensor_rule = False
+                else:
+                    print("RULE A1: Window IR override expired. Resuming sensor-based control.")
+                    window_ir_override_active = False
         
-        if humidity > HUMIDITY_THRESHOLD_WINDOW_OPEN and not actuator_states['window_status']:
-            if local_person_is_at_home:
-                print(f"RULE A1: Humidity ({humidity}%) > {HUMIDITY_THRESHOLD_WINDOW_OPEN}% AND Person AT HOME. Opening WINDOW.")
-                send_command_to_arduino1("WINDOW:90")
-                actuator_states['window_status'] = True; telemetry_update['window_status'] = True
-            else:
-                print(f"RULE A1: Humidity ({humidity}%) > {HUMIDITY_THRESHOLD_WINDOW_OPEN}%, BUT Person NOT AT HOME. Window remains closed.")
-        elif humidity < HUMIDITY_THRESHOLD_WINDOW_CLOSE and actuator_states['window_status']:
-            print(f"RULE A1: Humidity ({humidity}%) < {HUMIDITY_THRESHOLD_WINDOW_CLOSE}%. Closing WINDOW.")
-            send_command_to_arduino1("WINDOW:0")
-            actuator_states['window_status'] = False; telemetry_update['window_status'] = False
+        if apply_window_sensor_rule:
+            with person_is_at_home_lock: local_person_is_at_home = person_is_at_home
+            
+            if humidity > HUMIDITY_THRESHOLD_WINDOW_OPEN and not actuator_states.get('window_status', False):
+                if local_person_is_at_home:
+                    print(f"RULE A1: Humidity ({humidity}%) > {HUMIDITY_THRESHOLD_WINDOW_OPEN}% AND Person AT HOME. Opening WINDOW.")
+                    send_command_to_arduino1("WINDOW:90")
+                    actuator_states['window_status'] = True; telemetry_update['window_status'] = True
+                else:
+                    print(f"RULE A1: Humidity ({humidity}%) > {HUMIDITY_THRESHOLD_WINDOW_OPEN}%, BUT Person NOT AT HOME. Window remains closed.")
+            elif humidity < HUMIDITY_THRESHOLD_WINDOW_CLOSE and actuator_states['window_status']:
+                print(f"RULE A1: Humidity ({humidity}%) < {HUMIDITY_THRESHOLD_WINDOW_CLOSE}%. Closing WINDOW.")
+                send_command_to_arduino1("WINDOW:0")
+                actuator_states['window_status'] = False; telemetry_update['window_status'] = False
 
     # Rule: Light level for LED (WITH OVERRIDE CHECK)
     if light_level is not None:
