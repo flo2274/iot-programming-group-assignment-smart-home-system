@@ -18,7 +18,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # --- Configuration ---
-SERIAL_PORT_ARDUINO2 = '' 
+SERIAL_PORT_ARDUINO2 = "/dev/cu.usbmodem101"
 BAUD_RATE = 9600
 MQTT_BROKER_HOST = "test.mosquitto.org"
 MQTT_BROKER_PORT = 1883
@@ -27,6 +27,12 @@ MQTT_CLIENT_ID_EDGE2 = "edge2-gcal-simplified" # Descriptive
 TOPIC_PREFIX = "iot_project/groupXY" # !!! CHANGE groupXY !!!
 TOPIC_CALENDAR_PRESENCE_STATUS_PUB = f"{TOPIC_PREFIX}/home/calendar_presence"
 TOPIC_ARDUINO2_CMD_SUB = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE2}/arduino2/cmd"
+
+# NEW: Topic for publishing button press events from Arduino 2 (for external LED toggle)
+TOPIC_EDGE2_EXTERNAL_LED_TOGGLE_PUB = f"{TOPIC_PREFIX}/edge2/external_led/toggle_request" # For Edge Device 1
+
+# NEW: Topic for publishing IR events from Arduino 2 to Edge Device 1
+TOPIC_EDGE2_ARDUINO2_IR_EVENT_PUB = f"{TOPIC_PREFIX}/edge2/arduino2/ir_event"
 
 THINGSBOARD_HOST = "mqtt.thingsboard.cloud"
 THINGSBOARD_PORT = 1883
@@ -180,14 +186,30 @@ def on_connect_mqtt_edge(client, userdata, flags, rc, properties=None):
 
 def on_message_mqtt_edge(client, userdata, msg):
     payload_str = msg.payload.decode('utf-8'); 
+    print(f"MQTT EDGE RX (Edge2): Topic: {msg.topic}, Payload: {payload_str}") # Enhanced logging
     try:
         data = json.loads(payload_str)
         if msg.topic == TOPIC_ARDUINO2_CMD_SUB:
-            if data.get("actuator","").upper() == "BUZZER" and str(data.get("value","")).upper() == "BEEP":
-                duration = data.get("duration", GCAL_BUZZER_DURATION_MS)
-                print(f"MQTT EDGE CMD: Buzzer BEEP for {duration}ms.")
-                if SERIAL_PORT_ARDUINO2: send_command_to_arduino2(f"BUZZER_BEEP:{duration}")
-    except Exception as e: print(f"MQTT EDGE ERROR: Processing msg: {e}")
+            actuator = data.get("actuator","").upper()
+            value = str(data.get("value","")).upper()
+
+            if actuator == "BUZZER":
+                if value == "BEEP":
+                    duration = data.get("duration", GCAL_BUZZER_DURATION_MS)
+                    print(f"MQTT EDGE CMD (Edge2 for Arduino2): Buzzer BEEP for {duration}ms.")
+                    if SERIAL_PORT_ARDUINO2: send_command_to_arduino2(f"BUZZER_BEEP:{duration}")
+                elif value == "ON":
+                    print(f"MQTT EDGE CMD (Edge2 for Arduino2): Buzzer ON.")
+                    if SERIAL_PORT_ARDUINO2: send_command_to_arduino2("BUZZER:ON")
+                elif value == "OFF":
+                    print(f"MQTT EDGE CMD (Edge2 for Arduino2): Buzzer OFF.")
+                    if SERIAL_PORT_ARDUINO2: send_command_to_arduino2("BUZZER:OFF")
+                else:
+                    print(f"MQTT EDGE CMD (Edge2 for Arduino2): Unknown BUZZER value '{value}'.")
+            else:
+                print(f"MQTT EDGE CMD (Edge2 for Arduino2): Unknown actuator '{actuator}'.")
+
+    except Exception as e: print(f"MQTT EDGE ERROR (Edge2): Processing msg: {e}")
 
 def on_connect_mqtt_tb(client, userdata, flags, rc, properties=None):
     if rc == 0: print(f"MQTT TB: Connected to {THINGSBOARD_HOST}.")
@@ -195,13 +217,20 @@ def on_connect_mqtt_tb(client, userdata, flags, rc, properties=None):
 
 def connect_arduino2():
     global arduino2_serial_connection
-    if not SERIAL_PORT_ARDUINO2: return False
+    if not SERIAL_PORT_ARDUINO2: 
+        return False
     try:
-        if arduino2_serial_connection and arduino2_serial_connection.is_open: return True
-        if arduino2_serial_connection: arduino2_serial_connection.close()
+        if arduino2_serial_connection and arduino2_serial_connection.is_open: 
+            return True
+        if arduino2_serial_connection: 
+            arduino2_serial_connection.close()
         arduino2_serial_connection = serial.Serial(SERIAL_PORT_ARDUINO2, BAUD_RATE, timeout=1)
-        time.sleep(2); arduino2_serial_connection.flushInput(); return True
-    except Exception as e: arduino2_serial_connection = None; return False
+        time.sleep(2); 
+        arduino2_serial_connection.flushInput(); 
+        return True
+    except Exception as e: 
+        arduino2_serial_connection = None; 
+        return False
 
 def send_command_to_arduino2(command):
     if not arduino2_serial_connection or not arduino2_serial_connection.is_open: return
@@ -252,6 +281,132 @@ def parse_gcal_event_time_to_utc(time_data_str):
         return dt_obj.astimezone(pytz.utc) if dt_obj.tzinfo else pytz.utc.localize(dt_obj)
     except ValueError: return None
 
+# --- Arduino 2 Serial Reading Thread ---
+def read_from_arduino2_thread_func():
+    global arduino2_serial_connection, mqtt_edge_client, mqtt_tb_client
+    
+    if not SERIAL_PORT_ARDUINO2:
+        print("ARDUINO2 SERIAL: Port not configured. Reader thread will not start.")
+        return
+
+    print("ARDUINO2 SERIAL: Reader thread started.")
+    # Initial delay moved to after first connection attempt
+
+    while True:
+        if not arduino2_serial_connection or not arduino2_serial_connection.is_open:
+            print("ARDUINO2 SERIAL: Connection lost or not open. Attempting to connect/reconnect...")
+            if not connect_arduino2(): # connect_arduino2() attempts to open/reopen
+                print("ARDUINO2 SERIAL: Connection attempt failed. Retrying in 5s.")
+                time.sleep(5) 
+                continue
+            else:
+                print("ARDUINO2 SERIAL: Successfully connected/reconnected to Arduino 2.")
+                time.sleep(2) # Give Arduino time to settle after connection
+        
+        try:
+            if arduino2_serial_connection.in_waiting > 0:
+                line_bytes = b'' # Initialize to empty bytes
+                try:
+                    line_bytes = arduino2_serial_connection.readline()
+                    line = line_bytes.decode('utf-8', errors='ignore').strip()
+                except serial.SerialException as ser_read_err:
+                    print(f"ARDUINO2 SERIAL READ EXCEPTION: {ser_read_err}. Closing port and retrying connection.")
+                    if arduino2_serial_connection:
+                        try: arduino2_serial_connection.close()
+                        except: pass
+                    arduino2_serial_connection = None
+                    time.sleep(5)
+                    continue # Restart loop to attempt reconnection
+                except UnicodeDecodeError as e_unicode:
+                    print(f"ARDUINO2 SERIAL ERROR: UnicodeDecodeError - {e_unicode}. Line was: {line_bytes!r}")
+                    continue # Skip this line
+
+                if not line:
+                    time.sleep(0.01) # Small sleep if line is empty after strip
+                    continue
+
+                print(f"ARDUINO2: {line}") # Log raw data received
+
+                try:
+                    data = json.loads(line)
+
+                    if "status" in data and data["status"] == "Arduino 2 Simplified Ready":
+                        print(f"ARDUINO2 HANDSHAKE: Received ready signal: {data}")
+                        publish_to_thingsboard({"arduino2_status": "Ready", "arduino2_last_seen_local": get_current_local_time_formatted()})
+
+                    elif "button_action" in data:
+                        if data["button_action"] == "TOGGLE_EXTERNAL_LED":
+                            print("ARDUINO2 EVENT: Button pressed for external LED toggle.")
+                            action_time_utc = datetime.datetime.now(pytz.utc)
+                            
+                            # Publish to Edge MQTT for Edge Device 1
+                            if mqtt_edge_client and mqtt_edge_client.is_connected():
+                                ext_led_payload = {"request_source": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
+                                try:
+                                    mqtt_edge_client.publish(TOPIC_EDGE2_EXTERNAL_LED_TOGGLE_PUB, json.dumps(ext_led_payload), qos=1)
+                                    print(f"MQTT EDGE: Published external LED toggle request to {TOPIC_EDGE2_EXTERNAL_LED_TOGGLE_PUB}: {ext_led_payload}")
+                                except Exception as e_mqtt_pub:
+                                    print(f"MQTT EDGE ERROR: Failed to publish ext LED toggle: {e_mqtt_pub}")
+                            else:
+                                print("MQTT EDGE WARN: Not connected, cannot publish external LED toggle request.")
+                            
+                            publish_to_thingsboard({"external_led_toggle_requested": True}, event_timestamp_utc=action_time_utc)
+                    
+                    elif "ir_action" in data:
+                        action_time_utc = datetime.datetime.now(pytz.utc) # Get timestamp for any IR action
+                        ir_action_value = data["ir_action"]
+                        ir_event_for_edge1 = None
+
+                        if ir_action_value == "ALARM_OFF_LOCAL_BUZZER_":
+                            print("ARDUINO2 EVENT: IR signal received for ALARM OFF LOCAL BUZZER.")
+                            ir_event_for_edge1 = {"ir_event_type": "ALARM_OFF", "source_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
+                            # No direct command to Arduino2 here anymore
+                            publish_to_thingsboard({"local_buzzer_ir_trigger": "OFF_REQUESTED"}, event_timestamp_utc=action_time_utc)
+                        
+                        elif ir_action_value == "ALARM_ON_LOCAL_BUZZER_":
+                            print("ARDUINO2 EVENT: IR signal received for ALARM ON LOCAL BUZZER.")
+                            ir_event_for_edge1 = {"ir_event_type": "ALARM_ON", "source_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
+                            # No direct command to Arduino2 here anymore
+                            publish_to_thingsboard({"local_buzzer_ir_trigger": "ON_REQUESTED"}, event_timestamp_utc=action_time_utc)
+                        
+                        # Keep the old handler for a bit in case of mixed signals, but it should be deprecated
+                        elif ir_action_value == "ALARM_OFF_LOCAL_BUZZER": # Without underscore
+                            print("ARDUINO2 EVENT: IR signal (old format) received for ALARM OFF LOCAL BUZZER.")
+                            ir_event_for_edge1 = {"ir_event_type": "ALARM_OFF_OLD", "source_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
+                            # No direct command to Arduino2 here anymore
+                            publish_to_thingsboard({"local_buzzer_ir_trigger_old_format": "OFF_REQUESTED"}, event_timestamp_utc=action_time_utc)
+                        
+                        if ir_event_for_edge1 and mqtt_edge_client and mqtt_edge_client.is_connected():
+                            try:
+                                mqtt_edge_client.publish(TOPIC_EDGE2_ARDUINO2_IR_EVENT_PUB, json.dumps(ir_event_for_edge1), qos=1)
+                                print(f"MQTT EDGE: Published IR event to {TOPIC_EDGE2_ARDUINO2_IR_EVENT_PUB}: {ir_event_for_edge1}")
+                            except Exception as e_mqtt_pub_ir:
+                                print(f"MQTT EDGE ERROR: Failed to publish IR event: {e_mqtt_pub_ir}")
+                        elif ir_event_for_edge1:
+                             print("MQTT EDGE WARN: Not connected, cannot publish IR event.")
+
+
+                except json.JSONDecodeError:
+                    print(f"ARDUINO2 SERIAL JSON DECODE ERROR: for line: {line}")
+                except Exception as e_proc:
+                    print(f"ARDUINO2 SERIAL ERROR: Processing line '{line}': {e_proc}")
+
+            else: # No data in_waiting
+                time.sleep(0.05) # Small delay to prevent busy-waiting if no data
+
+        except serial.SerialException as e_ser_outer:
+            print(f"ARDUINO2 SERIAL CRITICAL: Outer loop SerialException: {e_ser_outer}. Closing port.")
+            if arduino2_serial_connection:
+                try: arduino2_serial_connection.close()
+                except: pass 
+            arduino2_serial_connection = None 
+            print("ARDUINO2 SERIAL: Will attempt to reconnect in the next loop iteration.")
+            time.sleep(5) # Wait before trying to read/reconnect again
+        except Exception as e_outer_loop:
+            print(f"ARDUINO2 SERIAL CRITICAL: Unexpected outer loop error: {e_outer_loop}")
+            # Potentially add more specific error handling or a longer backoff
+            time.sleep(5)
+        
 # --- Main Calendar Event Checking Loop ---
 def calendar_event_check_loop():
     global processed_event_actions, is_initial_presence_published
@@ -370,7 +525,7 @@ if __name__ == "__main__":
     except Exception as e: print(f"MQTT TB CRITICAL: Connect fail: {e}")
 
     if SERIAL_PORT_ARDUINO2: # Only start if port is configured
-        threading.Thread(target=read_from_arduino2_thread_func, daemon=True, name="Arduino2Reader").start() # Placeholder thread
+        threading.Thread(target=read_from_arduino2_thread_func, daemon=True, name="Arduino2Reader").start() 
     # else: print("INFO: SERIAL_PORT_ARDUINO2 not set. Arduino 2 (buzzer) functions disabled.") # Less verbose
 
     threading.Thread(target=calendar_event_check_loop, daemon=True, name="GCalEventCheckLoop").start()

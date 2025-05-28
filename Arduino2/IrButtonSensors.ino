@@ -1,4 +1,4 @@
-#include <IRremote.h>
+/*#include <IRremote.h>
 
 const int RECIEVER_PIN = 7;
 const int buttonPin = 4;
@@ -6,7 +6,7 @@ const int buttonPin = 4;
 bool buttonState = false;
 bool lastButtonReading = false;
 unsigned long lastDebounceTime = 0;
-const unsigned long debounceDelay = 50;
+unsigned long debounceDelay = 50;
 
 void setup() {
   pinMode(buttonPin, INPUT_PULLUP); 
@@ -45,4 +45,4 @@ void loop() {
     }
     IrReceiver.resume();
   }
-}
+}*/
