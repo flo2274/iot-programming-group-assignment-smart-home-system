@@ -369,12 +369,7 @@ def read_from_arduino2_thread_func():
                             # No direct command to Arduino2 here anymore
                             publish_to_thingsboard({"local_buzzer_ir_trigger": "ON_REQUESTED"}, event_timestamp_utc=action_time_utc)
                         
-                        # Keep the old handler for a bit in case of mixed signals, but it should be deprecated
-                        elif ir_action_value == "ALARM_OFF_LOCAL_BUZZER": # Without underscore
-                            print("ARDUINO2 EVENT: IR signal (old format) received for ALARM OFF LOCAL BUZZER.")
-                            ir_event_for_edge1 = {"ir_event_type": "ALARM_OFF_OLD", "source_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
-                            # No direct command to Arduino2 here anymore
-                            publish_to_thingsboard({"local_buzzer_ir_trigger_old_format": "OFF_REQUESTED"}, event_timestamp_utc=action_time_utc)
+
                         
                         if ir_event_for_edge1 and mqtt_edge_client and mqtt_edge_client.is_connected():
                             try:
