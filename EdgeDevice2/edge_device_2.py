@@ -171,7 +171,7 @@ def trigger_alarm_action(event_data):
 
     print(f"ALARM ACTION: Event '{summary}' (planned start: {local_event_start_formatted_simple}) triggered!")
     if SERIAL_PORT_ARDUINO2:
-        send_command_to_arduino2(f"BUZZER_BEEP:{GCAL_BUZZER_DURATION_MS}")
+        send_command_to_arduino2(f"BUZZER:BEEP{GCAL_BUZZER_DURATION_MS}")
 
     tb_payload_alarm_values = {
         "calendar_alarm_summary": summary, # Title of the ALARM event

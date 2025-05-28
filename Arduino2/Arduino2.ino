@@ -84,8 +84,13 @@ void loop() {
       } else if (state == "OFF") {
         digitalWrite(MAIN_BUZZER_PIN, LOW);
       }
+      else if (state == "BEEP2000") {
+        digitalWrite(MAIN_BUZZER_PIN, HIGH);
+        delay(10000);
+        digitalWrite(MAIN_BUZZER_PIN, LOW);
     }
   }
   
   delay(100);
+}
 }
