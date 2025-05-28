@@ -171,7 +171,7 @@ def trigger_alarm_action(event_data):
 
     print(f"ALARM ACTION: Event '{summary}' (planned start: {local_event_start_formatted_simple}) triggered!")
     if SERIAL_PORT_ARDUINO2:
-        send_command_to_arduino2(f"BUZZER:BEEP{GCAL_BUZZER_DURATION_MS}")
+        send_command_to_arduino2("BUZZER:BEEP2000")
 
     tb_payload_alarm_values = {
         "calendar_alarm_summary": summary, # Title of the ALARM event
@@ -196,8 +196,11 @@ def on_message_mqtt_edge(client, userdata, msg):
             if actuator == "BUZZER":
                 if value == "BEEP":
                     duration = data.get("duration", GCAL_BUZZER_DURATION_MS)
-                    print(f"MQTT EDGE CMD (Edge2 for Arduino2): Buzzer BEEP for {duration}ms.")
-                    if SERIAL_PORT_ARDUINO2: send_command_to_arduino2(f"BUZZER_BEEP:{duration}")
+                    print(f"MQTT EDGE CMD (Edge2 for Arduino2): Buzzer BEEP for {duration}ms. Arduino2 uses fixed BEEP2000.")
+                    if "duration" in data:
+                        if SERIAL_PORT_ARDUINO2: send_command_to_arduino2(f"BUZZER_BEEP:{duration}")
+                    else:
+                        if SERIAL_PORT_ARDUINO2: send_command_to_arduino2("BUZZER:BEEP2000")
                 elif value == "ON":
                     print(f"MQTT EDGE CMD (Edge2 for Arduino2): Buzzer ON.")
                     if SERIAL_PORT_ARDUINO2: send_command_to_arduino2("BUZZER:ON")
@@ -356,20 +359,40 @@ def read_from_arduino2_thread_func():
                         action_time_utc = datetime.datetime.now(pytz.utc) # Get timestamp for any IR action
                         ir_action_value = data["ir_action"]
                         ir_event_for_edge1 = None
+                        event_type_str = "UNKNOWN_IR_ACTION" # Default for logging/payload
 
-                        if ir_action_value == "ALARM_OFF_LOCAL_BUZZER_":
+                        if ir_action_value == "ALARM_OFF_LOCAL_BUZZER":
                             print("ARDUINO2 EVENT: IR signal received for ALARM OFF LOCAL BUZZER.")
-                            ir_event_for_edge1 = {"ir_event_type": "ALARM_OFF", "source_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
-                            # No direct command to Arduino2 here anymore
+                            event_type_str = "ALARM_OFF"
                             publish_to_thingsboard({"local_buzzer_ir_trigger": "OFF_REQUESTED"}, event_timestamp_utc=action_time_utc)
                         
-                        elif ir_action_value == "ALARM_ON_LOCAL_BUZZER_":
+                        elif ir_action_value == "ALARM_ON_LOCAL_BUZZER":
                             print("ARDUINO2 EVENT: IR signal received for ALARM ON LOCAL BUZZER.")
-                            ir_event_for_edge1 = {"ir_event_type": "ALARM_ON", "source_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
-                            # No direct command to Arduino2 here anymore
+                            event_type_str = "ALARM_ON"
                             publish_to_thingsboard({"local_buzzer_ir_trigger": "ON_REQUESTED"}, event_timestamp_utc=action_time_utc)
-                        
 
+                        elif ir_action_value == "FAN_ON":
+                            print("ARDUINO2 EVENT: IR signal received for FAN ON.")
+                            event_type_str = "FAN_ON"
+                            publish_to_thingsboard({"fan_ir_trigger": "ON_REQUESTED"}, event_timestamp_utc=action_time_utc)
+                        
+                        elif ir_action_value == "FAN_OFF":
+                            print("ARDUINO2 EVENT: IR signal received for FAN OFF.")
+                            event_type_str = "FAN_OFF"
+                            publish_to_thingsboard({"fan_ir_trigger": "OFF_REQUESTED"}, event_timestamp_utc=action_time_utc)
+
+                        elif ir_action_value == "WINDOW_OPEN":
+                            print("ARDUINO2 EVENT: IR signal received for WINDOW OPEN.")
+                            event_type_str = "WINDOW_OPEN"
+                            publish_to_thingsboard({"window_ir_trigger": "OPEN_REQUESTED"}, event_timestamp_utc=action_time_utc)
+
+                        elif ir_action_value == "WINDOW_CLOSED":
+                            print("ARDUINO2 EVENT: IR signal received for WINDOW CLOSED.")
+                            event_type_str = "WINDOW_CLOSED"
+                            publish_to_thingsboard({"window_ir_trigger": "CLOSED_REQUESTED"}, event_timestamp_utc=action_time_utc)
+                        
+                        if event_type_str != "UNKNOWN_IR_ACTION":
+                            ir_event_for_edge1 = {"ir_event_type": event_type_str, "source_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
                         
                         if ir_event_for_edge1 and mqtt_edge_client and mqtt_edge_client.is_connected():
                             try:

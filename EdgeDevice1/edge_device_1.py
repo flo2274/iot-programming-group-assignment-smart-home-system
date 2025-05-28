@@ -173,6 +173,9 @@ def on_message_edge_mqtt(client, userdata, msg):
             
             tb_payload_a2_buzzer = {}
             mqtt_cmd_for_a2_buzzer = None
+            # Variables for A1 actuator changes based on A2 IR events
+            a1_telemetry_update = {}
+            a1_actuator_command_sent = False
 
             if ir_event_type == "ALARM_ON":
                 print("EDGE MQTT (Edge1): Processing ALARM_ON for Arduino2's buzzer.")
@@ -182,9 +185,61 @@ def on_message_edge_mqtt(client, userdata, msg):
                 print("EDGE MQTT (Edge1): Processing ALARM_OFF for Arduino2's buzzer.")
                 mqtt_cmd_for_a2_buzzer = {"actuator": "BUZZER", "value": "OFF"}
                 tb_payload_a2_buzzer = {"arduino2_buzzer_commanded_state": 0, "arduino2_buzzer_last_ir_trigger": "OFF"}
-            else:
-                print(f"EDGE MQTT (Edge1): Unknown ir_event_type received: {ir_event_type}")
+            
+            # --- Handle IR events for Arduino1 actuators ---
+            elif ir_event_type == "FAN_ON":
+                print("EDGE MQTT (Edge1): IR Event - FAN_ON for Arduino1.")
+                if not actuator_states.get('fan_status', False):
+                    send_command_to_arduino1("FAN_ON") # Or FAN_SPEED:X, FAN_STEPS:Y if needed
+                    actuator_states['fan_status'] = True
+                    a1_telemetry_update['fan_status'] = True
+                    a1_telemetry_update['arduino1_fan_ir_triggered_state'] = 1
+                    a1_actuator_command_sent = True
+                else:
+                    print("EDGE MQTT (Edge1): Arduino1 Fan already ON. No action.")
+            
+            elif ir_event_type == "FAN_OFF":
+                print("EDGE MQTT (Edge1): IR Event - FAN_OFF for Arduino1.")
+                if actuator_states.get('fan_status', False):
+                    send_command_to_arduino1("FAN_OFF")
+                    actuator_states['fan_status'] = False
+                    a1_telemetry_update['fan_status'] = False
+                    a1_telemetry_update['arduino1_fan_ir_triggered_state'] = 0
+                    a1_actuator_command_sent = True
+                else:
+                    print("EDGE MQTT (Edge1): Arduino1 Fan already OFF. No action.")
 
+            elif ir_event_type == "WINDOW_OPEN":
+                print("EDGE MQTT (Edge1): IR Event - WINDOW_OPEN for Arduino1.")
+                with person_is_at_home_lock: local_person_is_at_home = person_is_at_home
+                if local_person_is_at_home:
+                    if not actuator_states.get('window_status', False):
+                        send_command_to_arduino1("WINDOW:90") # Assuming 90 is open
+                        actuator_states['window_status'] = True
+                        a1_telemetry_update['window_status'] = True
+                        a1_telemetry_update['arduino1_window_ir_triggered_state'] = 1
+                        a1_actuator_command_sent = True
+                    else:
+                        print("EDGE MQTT (Edge1): Arduino1 Window already OPEN. No action.")
+                else:
+                    print("EDGE MQTT (Edge1): Person not at home. WINDOW_OPEN IR command for Arduino1 ignored.")
+                    a1_telemetry_update['arduino1_window_ir_ignored_due_to_presence'] = 1 # Optional telemetry
+            
+            elif ir_event_type == "WINDOW_CLOSED":
+                print("EDGE MQTT (Edge1): IR Event - WINDOW_CLOSED for Arduino1.")
+                if actuator_states.get('window_status', False):
+                    send_command_to_arduino1("WINDOW:0") # Assuming 0 is closed
+                    actuator_states['window_status'] = False
+                    a1_telemetry_update['window_status'] = False
+                    a1_telemetry_update['arduino1_window_ir_triggered_state'] = 0
+                    a1_actuator_command_sent = True
+                else:
+                    print("EDGE MQTT (Edge1): Arduino1 Window already CLOSED. No action.")
+            
+            else:
+                print(f"EDGE MQTT (Edge1): Unknown or unhandled ir_event_type for A1/A2 logic: {ir_event_type}")
+
+            # Publish command to Arduino2's buzzer if determined
             if mqtt_cmd_for_a2_buzzer and edge_mqtt_client and edge_mqtt_client.is_connected():
                 try:
                     edge_mqtt_client.publish(TOPIC_EDGE1_TO_ARDUINO2_CMD_PUB, json.dumps(mqtt_cmd_for_a2_buzzer), qos=1)
@@ -192,9 +247,15 @@ def on_message_edge_mqtt(client, userdata, msg):
                 except Exception as e_pub_a2_cmd:
                     print(f"EDGE MQTT ERROR (Edge1): Failed to publish command for Arduino2 buzzer: {e_pub_a2_cmd}")
             
+            # Publish telemetry for Arduino2's buzzer state from Edge1's perspective
             if tb_payload_a2_buzzer and tb_mqtt_client and tb_mqtt_client.is_connected():
                 tb_mqtt_client.publish("v1/devices/me/telemetry", json.dumps(tb_payload_a2_buzzer), qos=1)
                 print(f"THINGSBOARD (Edge1): Sent telemetry for Arduino2 buzzer: {tb_payload_a2_buzzer}")
+            
+            # Publish actuator status for Arduino1 if changed by an IR event from Arduino2
+            if a1_actuator_command_sent and a1_telemetry_update:
+                publish_actuator_status(a1_telemetry_update) # This sends to TB and TOPIC_EDGE1_A1_ACTUATOR_STATUS
+                print(f"THINGSBOARD (Edge1): Sent telemetry for Arduino1 actuators changed by A2 IR: {a1_telemetry_update}")
 
 
     except json.JSONDecodeError:

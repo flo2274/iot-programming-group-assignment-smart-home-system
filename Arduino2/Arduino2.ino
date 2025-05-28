@@ -4,8 +4,15 @@
 #define BUTTON_PIN 4          // Digital pin for the button (controls an EXTERNAL LED)
 #define MAIN_BUZZER_PIN 2     // Digital pin for the local Buzzer
 
-const unsigned long IR_CODE_ALARM_OFF = 3125149440; 
-const unsigned long IR_CODE_ALARM_ON = 4077715200; 
+const unsigned long IR_CODE_ALARM_OFF = 3125149440; // off
+const unsigned long IR_CODE_ALARM_ON = 4077715200; // on
+
+const unsigned long IR_CODE_FAN_ON = 3877175040; // 2
+const unsigned long IR_CODE_FAN_OFF = 2707357440; // 3 
+
+const unsigned long IR_CODE_WINDOW_ON = 4144561920; // 4 
+const unsigned long IR_CODE_WINDOW_OFF = 3810328320; // 5
+
 
 
 int lastSteadyButtonState = HIGH; // Assuming INPUT_PULLUP, so HIGH is unpressed
@@ -47,30 +54,31 @@ void loop() {
   }
   lastSteadyButtonState = newButtonReading;
 
-
-  // --- Handle IR Reception (for LOCAL BUZZER OFF) ---
   if (IrReceiver.decode()) {
     unsigned long receivedIRCode = IrReceiver.decodedIRData.decodedRawData;
-    // Serial.println(receivedIRCode); // DEBUG: Removed as Python expects only JSON
-    // Act only on a new, valid code (not a repeat or zero)
     if (receivedIRCode != 0 && !(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
       
       if (receivedIRCode == IR_CODE_ALARM_OFF) {
-        Serial.println("{\"ir_action\":\"ALARM_OFF_LOCAL_BUZZER_\"}");
+        Serial.println("{\"ir_action\":\"ALARM_OFF_LOCAL_BUZZER\"}");
       }
-      if (receivedIRCode == IR_CODE_ALARM_ON) 
+      if (receivedIRCode == IR_CODE_FAN_ON) 
       {
-        Serial.println("{\"ir_action\":\"ALARM_ON_LOCAL_BUZZER_\"}");
+        Serial.println("{\"ir_action\":\"FAN_ON\"}");
       }
-      else {
-        // Optionally, send other recognized IR codes if needed by Edge Device 2
-        // String irHexCode = String(receivedIRCode, HEX);
-        // irHexCode.toUpperCase();
-        // String irDataToEdge2 = "{\"ir_code_unknown\":\"0x" + irHexCode + "\"}";
-        // Serial.println(irDataToEdge2);z
+      if (receivedIRCode == IR_CODE_FAN_OFF)
+      {
+        Serial.println("{\"ir_action\":\"FAN_OFF\"}");
+      }
+       if (receivedIRCode == IR_CODE_WINDOW_ON) 
+      {
+        Serial.println("{\"ir_action\":\"WINDOW_OPEN\"}");
+      }
+       if (receivedIRCode == IR_CODE_WINDOW_OFF) 
+      {
+        Serial.println("{\"ir_action\":\"WINDOW_CLOSED\"}");
       }
     }
-    IrReceiver.resume(); // Prepare for the next IR code
+    IrReceiver.resume(); 
   }
 
   if (Serial.available() > 0) {
