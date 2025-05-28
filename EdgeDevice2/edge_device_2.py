@@ -365,12 +365,7 @@ def read_from_arduino2_thread_func():
                             print("ARDUINO2 EVENT: IR signal received for ALARM OFF LOCAL BUZZER.")
                             event_type_str = "ALARM_OFF"
                             publish_to_thingsboard({"local_buzzer_ir_trigger": "OFF_REQUESTED"}, event_timestamp_utc=action_time_utc)
-                        
-                        elif ir_action_value == "ALARM_ON_LOCAL_BUZZER":
-                            print("ARDUINO2 EVENT: IR signal received for ALARM ON LOCAL BUZZER.")
-                            event_type_str = "ALARM_ON"
-                            publish_to_thingsboard({"local_buzzer_ir_trigger": "ON_REQUESTED"}, event_timestamp_utc=action_time_utc)
-
+                            
                         elif ir_action_value == "FAN_ON":
                             print("ARDUINO2 EVENT: IR signal received for FAN ON.")
                             event_type_str = "FAN_ON"
