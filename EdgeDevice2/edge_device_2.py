@@ -1,5 +1,3 @@
-# edge_device_2.py (Calendar: Simplified & Clearer Away/Alarm to ThingsBoard)
-
 import serial
 import time
 import json
@@ -17,26 +15,22 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# --- Configuration ---
 SERIAL_PORT_ARDUINO2 = "/dev/cu.usbmodem101"
 BAUD_RATE = 9600
 MQTT_BROKER_HOST = "test.mosquitto.org"
 MQTT_BROKER_PORT = 1883
-MQTT_CLIENT_ID_EDGE2 = "edge2-gcal-simplified" # Descriptive
+MQTT_CLIENT_ID_EDGE2 = "edge2-gcal-simplified" 
 
-TOPIC_PREFIX = "iot_project/groupXY" # !!! CHANGE groupXY !!!
-TOPIC_CALENDAR_PRESENCE_STATUS_PUB = f"{TOPIC_PREFIX}/home/calendar_presence"
-TOPIC_ARDUINO2_CMD_SUB = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE2}/arduino2/cmd"
+TOPIC_PREFIX = "iot_project/test" 
+CALENDAR_PUB = f"{TOPIC_PREFIX}/home/calendar_presence"
+CMD_SUB = f"{TOPIC_PREFIX}/{MQTT_CLIENT_ID_EDGE2}/arduino2/cmd"
 
-# NEW: Topic for publishing button press events from Arduino 2 (for external LED toggle)
-TOPIC_EDGE2_EXTERNAL_LED_TOGGLE_PUB = f"{TOPIC_PREFIX}/edge2/external_led/toggle_request" # For Edge Device 1
-
-# NEW: Topic for publishing IR events from Arduino 2 to Edge Device 1
-TOPIC_EDGE2_ARDUINO2_IR_EVENT_PUB = f"{TOPIC_PREFIX}/edge2/arduino2/ir_event"
+LED_TOGGLE_PUB = f"{TOPIC_PREFIX}/edge2/external_led/toggle_request" # For Edge Device 1
+IR_EVENT_PUB = f"{TOPIC_PREFIX}/edge2/arduino2/ir_event"
 
 THINGSBOARD_HOST = "mqtt.thingsboard.cloud"
 THINGSBOARD_PORT = 1883
-THINGSBOARD_ACCESS_TOKEN_EDGE2 = "rj6t94nd52Gk2vFrXXDO" 
+THINGSBOARD_ACCESS_TOKEN_EDGE2 = "rj6t94nd52Gk2vFrXXDO" # ehhhh
 
 GCAL_SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
 GCAL_CREDENTIALS_FILE = 'credentials.json'
@@ -53,18 +47,12 @@ GCAL_EVENT_TRIGGER_WINDOW_MINUTES = 2
 GCAL_PAST_EVENT_TOLERANCE_SECONDS = GCAL_CHECK_INTERVAL_SECONDS + 15 
 GCAL_BUZZER_DURATION_MS = 2000
 
-# --- State Tracking ---
-# Stores {event_id: event_start_time_utc} to track processed event instances for a specific start time.
-# If an event with the same ID appears with a *new* start_time, it can be re-processed.
 processed_event_actions = {} 
 
-# --- Presence State & Timer ---
 is_person_at_home_by_calendar = True
 away_timer_object = None
-current_away_event_summary_for_log = None # For logging when timer expires
 presence_lock = threading.RLock()
 
-# --- Global System Variables ---
 gcal_service_instance = None
 gcal_service_init_lock = threading.Lock()
 mqtt_edge_client = None
@@ -73,7 +61,6 @@ arduino2_serial_connection = None
 arduino2_serial_lock = threading.Lock()
 is_initial_presence_published = False
 
-# --- Helper Functions ---
 def get_current_local_time_formatted():
     return datetime.datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')
 
@@ -107,15 +94,14 @@ def update_calendar_presence_status(is_at_home, reason_log=""):
     edge_payload = {"person_at_home": is_at_home}
     if mqtt_edge_client and mqtt_edge_client.is_connected():
         print(f"MQTT EDGE: Publishing presence status: {edge_payload}")
-        try: mqtt_edge_client.publish(TOPIC_CALENDAR_PRESENCE_STATUS_PUB, json.dumps(edge_payload), qos=1, retain=True)
+        try: mqtt_edge_client.publish(CALENDAR_PUB, json.dumps(edge_payload), qos=1, retain=True)
         except Exception as e: print(f"MQTT EDGE ERROR: Failed to publish presence: {e}")
 
     tb_payload_values = {
         "overall_calendar_presence": is_at_home,
         "presence_last_reason": reason_log
-        # "presence_last_update_time_local": get_current_local_time_formatted() # Optional
     }
-    publish_to_thingsboard(tb_payload_values) # Uses current time as TB timestamp for this general status
+    publish_to_thingsboard(tb_payload_values) 
 
 def on_away_timer_expired():
     global away_timer_object, current_away_event_summary_for_log
@@ -123,11 +109,6 @@ def on_away_timer_expired():
         reason = f"AWAY timer expired for: '{current_away_event_summary_for_log}'"
         print(f"PRESENCE CONTROL: {reason}. Setting person AT HOME.")
         update_calendar_presence_status(True, reason)
-        
-        # Optional: Signal that the specific "calendar_away_active" period has ended
-        # tb_payload_values = { "calendar_away_active_flag": False } # Use a distinct flag
-        # publish_to_thingsboard(tb_payload_values)
-        
         away_timer_object = None
         current_away_event_summary_for_log = None
 
@@ -143,18 +124,18 @@ def start_away_mode(duration_minutes, event_data):
             print(f"PRESENCE CONTROL: Cancelling existing AWAY timer for '{current_away_event_summary_for_log}' by new event '{summary}'.")
             away_timer_object.cancel()
 
-        current_away_event_summary_for_log = summary # Store for when timer expires
+        current_away_event_summary_for_log = summary 
         reason = f"'{summary}' [AWAY:{duration_minutes}m] triggered."
         print(f"PRESENCE CONTROL: {reason}. Setting person NOT AT HOME for {duration_minutes} minutes.")
         update_calendar_presence_status(False, reason)
 
         system_local_tz = datetime.datetime.now().astimezone().tzinfo
         tb_payload_away_values = {
-            "calendar_away_summary": summary, # Title of the AWAY event
+            "calendar_away_summary": summary, 
             "calendar_away_duration_minutes": duration_minutes,
-            "calendar_away_start_local": event_start_utc.astimezone(system_local_tz).strftime('%H:%M (%d.%m)'), # Simpler format
+            "calendar_away_start_local": event_start_utc.astimezone(system_local_tz).strftime('%H:%M (%d.%m)'),
         }
-        publish_to_thingsboard(tb_payload_away_values, event_timestamp_utc=event_start_utc) # Use event start as TS
+        publish_to_thingsboard(tb_payload_away_values, event_timestamp_utc=event_start_utc) 
 
         away_duration_seconds = duration_minutes * 60
         away_timer_object = threading.Timer(away_duration_seconds, on_away_timer_expired)
@@ -177,19 +158,17 @@ def trigger_alarm_action(event_data):
         "calendar_alarm_summary": summary, # Title of the ALARM event
         "calendar_alarm_start_local": local_event_start_formatted_simple,
     }
-    publish_to_thingsboard(tb_payload_alarm_values, event_timestamp_utc=event_start_utc) # Use event start as TS
+    publish_to_thingsboard(tb_payload_alarm_values, event_timestamp_utc=event_start_utc) 
 
-# --- MQTT, Arduino, GCal Service Init (Keep as is, ensure robustness) ---
-def on_connect_mqtt_edge(client, userdata, flags, rc, properties=None):
-    if rc == 0: print(f"MQTT EDGE: Connected to {MQTT_BROKER_HOST}."); client.subscribe(TOPIC_ARDUINO2_CMD_SUB)
-    else: print(f"MQTT EDGE ERROR: Connection failed, rc {rc}")
+def on_connect_mqtt_edge(client, return_code):
+    if return_code == 0: print(f"MQTT EDGE: Connected to {MQTT_BROKER_HOST}."); client.subscribe(CMD_SUB)
+    else: print(f"MQTT EDGE ERROR: Connection failed, return_code {return_code}")
 
-def on_message_mqtt_edge(client, userdata, msg):
+def on_message_mqtt_edge(msg):
     payload_str = msg.payload.decode('utf-8'); 
-    print(f"MQTT EDGE RX (Edge2): Topic: {msg.topic}, Payload: {payload_str}") # Enhanced logging
     try:
         data = json.loads(payload_str)
-        if msg.topic == TOPIC_ARDUINO2_CMD_SUB:
+        if msg.topic == CMD_SUB:
             actuator = data.get("actuator","").upper()
             value = str(data.get("value","")).upper()
 
@@ -214,9 +193,9 @@ def on_message_mqtt_edge(client, userdata, msg):
 
     except Exception as e: print(f"MQTT EDGE ERROR (Edge2): Processing msg: {e}")
 
-def on_connect_mqtt_tb(client, userdata, flags, rc, properties=None):
-    if rc == 0: print(f"MQTT TB: Connected to {THINGSBOARD_HOST}.")
-    else: print(f"MQTT TB ERROR: Connection failed, rc {rc}")
+def on_connect_mqtt_tb(return_code):
+    if return_code == 0: print(f"MQTT TB: Connected to {THINGSBOARD_HOST}.")
+    else: print(f"MQTT TB ERROR: Connection failed, return_code {return_code}")
 
 def connect_arduino2():
     global arduino2_serial_connection
@@ -262,10 +241,12 @@ def get_gcal_service():
                 if not os.path.exists(GCAL_CREDENTIALS_FILE):
                     print(f"GCAL CRITICAL: Credentials file '{GCAL_CREDENTIALS_FILE}' missing."); return None
                 try:
-                    print("GCAL AUTH: Running authorization flow...");
+                    print("GCAL AUTH: Running authorisation flow...");
                     flow = InstalledAppFlow.from_client_secrets_file(GCAL_CREDENTIALS_FILE, GCAL_SCOPES)
                     creds = flow.run_local_server(port=0)
-                except Exception as e: print(f"GCAL AUTH ERROR: Flow failed: {e}"); return None
+                except Exception as e: 
+                    print(f"GCAL AUTH ERROR: Flow failed: {e}"); 
+                    return None
             if creds: 
                 try:
                     with open(GCAL_TOKEN_FILE, 'w') as token_file: token_file.write(creds.to_json())
@@ -274,18 +255,23 @@ def get_gcal_service():
         if creds and creds.valid:
             try:
                 gcal_service_instance = build('calendar', 'v3', credentials=creds)
-                print("GCAL: Service created successfully."); return gcal_service_instance
-            except Exception as e: print(f"GCAL ERROR: Build service failed: {e}"); return None
-        else: print("GCAL CRITICAL: No valid credentials obtained."); return None
+                print("GCAL: Service created successfully."); 
+                return gcal_service_instance
+            except Exception as e: 
+                print(f"GCAL ERROR: Build service failed: {e}"); 
+                return None
+        else: 
+            print("GCAL: No valid credentials obtained."); 
+            return None
 
 def parse_gcal_event_time_to_utc(time_data_str):
     try:
         dt_obj = dateutil_parser.isoparse(time_data_str)
         return dt_obj.astimezone(pytz.utc) if dt_obj.tzinfo else pytz.utc.localize(dt_obj)
-    except ValueError: return None
+    except ValueError: 
+        return None
 
-# --- Arduino 2 Serial Reading Thread ---
-def read_from_arduino2_thread_func():
+def read_from_arduino2():
     global arduino2_serial_connection, mqtt_edge_client, mqtt_tb_client
     
     if not SERIAL_PORT_ARDUINO2:
@@ -293,7 +279,6 @@ def read_from_arduino2_thread_func():
         return
 
     print("ARDUINO2 SERIAL: Reader thread started.")
-    # Initial delay moved to after first connection attempt
 
     while True:
         if not arduino2_serial_connection or not arduino2_serial_connection.is_open:
@@ -304,11 +289,11 @@ def read_from_arduino2_thread_func():
                 continue
             else:
                 print("ARDUINO2 SERIAL: Successfully connected/reconnected to Arduino 2.")
-                time.sleep(2) # Give Arduino time to settle after connection
+                time.sleep(2) 
         
         try:
             if arduino2_serial_connection.in_waiting > 0:
-                line_bytes = b'' # Initialize to empty bytes
+                line_bytes = b'' 
                 try:
                     line_bytes = arduino2_serial_connection.readline()
                     line = line_bytes.decode('utf-8', errors='ignore').strip()
@@ -319,16 +304,14 @@ def read_from_arduino2_thread_func():
                         except: pass
                     arduino2_serial_connection = None
                     time.sleep(5)
-                    continue # Restart loop to attempt reconnection
+                    continue 
                 except UnicodeDecodeError as e_unicode:
                     print(f"ARDUINO2 SERIAL ERROR: UnicodeDecodeError - {e_unicode}. Line was: {line_bytes!r}")
-                    continue # Skip this line
-
+                    continue 
                 if not line:
-                    time.sleep(0.01) # Small sleep if line is empty after strip
+                    time.sleep(0.01) 
                     continue
-
-                print(f"ARDUINO2: {line}") # Log raw data received
+                print(f"ARDUINO2: {line}") 
 
                 try:
                     data = json.loads(line)
@@ -342,12 +325,11 @@ def read_from_arduino2_thread_func():
                             print("ARDUINO2 EVENT: Button pressed for external LED toggle.")
                             action_time_utc = datetime.datetime.now(pytz.utc)
                             
-                            # Publish to Edge MQTT for Edge Device 1
                             if mqtt_edge_client and mqtt_edge_client.is_connected():
-                                ext_led_payload = {"request_source": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
+                                ext_led_payload = {"request_soureturn_codee": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
                                 try:
-                                    mqtt_edge_client.publish(TOPIC_EDGE2_EXTERNAL_LED_TOGGLE_PUB, json.dumps(ext_led_payload), qos=1)
-                                    print(f"MQTT EDGE: Published external LED toggle request to {TOPIC_EDGE2_EXTERNAL_LED_TOGGLE_PUB}: {ext_led_payload}")
+                                    mqtt_edge_client.publish(LED_TOGGLE_PUB, json.dumps(ext_led_payload), qos=1)
+                                    print(f"MQTT EDGE: Published external LED toggle request to {LED_TOGGLE_PUB}: {ext_led_payload}")
                                 except Exception as e_mqtt_pub:
                                     print(f"MQTT EDGE ERROR: Failed to publish ext LED toggle: {e_mqtt_pub}")
                             else:
@@ -359,7 +341,7 @@ def read_from_arduino2_thread_func():
                         action_time_utc = datetime.datetime.now(pytz.utc) # Get timestamp for any IR action
                         ir_action_value = data["ir_action"]
                         ir_event_for_edge1 = None
-                        event_type_str = "UNKNOWN_IR_ACTION" # Default for logging/payload
+                        event_type_str = "UNKNOWN_IR_ACTION"
 
                         if ir_action_value == "ALARM_OFF_LOCAL_BUZZER":
                             print("ARDUINO2 EVENT: IR signal received for ALARM OFF LOCAL BUZZER.")
@@ -387,25 +369,24 @@ def read_from_arduino2_thread_func():
                             publish_to_thingsboard({"window_ir_trigger": "CLOSED_REQUESTED"}, event_timestamp_utc=action_time_utc)
                         
                         if event_type_str != "UNKNOWN_IR_ACTION":
-                            ir_event_for_edge1 = {"ir_event_type": event_type_str, "source_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
+                            ir_event_for_edge1 = {"ir_event_type": event_type_str, "soureturn_codee_device": MQTT_CLIENT_ID_EDGE2, "timestamp_utc": action_time_utc.isoformat()}
                         
                         if ir_event_for_edge1 and mqtt_edge_client and mqtt_edge_client.is_connected():
                             try:
-                                mqtt_edge_client.publish(TOPIC_EDGE2_ARDUINO2_IR_EVENT_PUB, json.dumps(ir_event_for_edge1), qos=1)
-                                print(f"MQTT EDGE: Published IR event to {TOPIC_EDGE2_ARDUINO2_IR_EVENT_PUB}: {ir_event_for_edge1}")
+                                mqtt_edge_client.publish(IR_EVENT_PUB, json.dumps(ir_event_for_edge1), qos=1)
+                                print(f"MQTT EDGE: Published IR event to {IR_EVENT_PUB}: {ir_event_for_edge1}")
                             except Exception as e_mqtt_pub_ir:
                                 print(f"MQTT EDGE ERROR: Failed to publish IR event: {e_mqtt_pub_ir}")
                         elif ir_event_for_edge1:
                              print("MQTT EDGE WARN: Not connected, cannot publish IR event.")
-
 
                 except json.JSONDecodeError:
                     print(f"ARDUINO2 SERIAL JSON DECODE ERROR: for line: {line}")
                 except Exception as e_proc:
                     print(f"ARDUINO2 SERIAL ERROR: Processing line '{line}': {e_proc}")
 
-            else: # No data in_waiting
-                time.sleep(0.05) # Small delay to prevent busy-waiting if no data
+            else: # No data in waiting
+                time.sleep(0.03) 
 
         except serial.SerialException as e_ser_outer:
             print(f"ARDUINO2 SERIAL CRITICAL: Outer loop SerialException: {e_ser_outer}. Closing port.")
@@ -414,13 +395,11 @@ def read_from_arduino2_thread_func():
                 except: pass 
             arduino2_serial_connection = None 
             print("ARDUINO2 SERIAL: Will attempt to reconnect in the next loop iteration.")
-            time.sleep(5) # Wait before trying to read/reconnect again
+            time.sleep(5) 
         except Exception as e_outer_loop:
             print(f"ARDUINO2 SERIAL CRITICAL: Unexpected outer loop error: {e_outer_loop}")
-            # Potentially add more specific error handling or a longer backoff
             time.sleep(5)
         
-# --- Main Calendar Event Checking Loop ---
 def calendar_event_check_loop():
     global processed_event_actions, is_initial_presence_published
     
@@ -435,7 +414,6 @@ def calendar_event_check_loop():
     loop_count = 0
     while True:
         loop_count += 1
-        # print(f"\nGCAL LOOP [{loop_count}]: Top.") 
         if not service:
             service = get_gcal_service()
             if not service:
@@ -444,8 +422,6 @@ def calendar_event_check_loop():
         
         now_local = datetime.datetime.now().astimezone()
         now_utc = now_local.astimezone(pytz.utc)
-        # print(f"GCAL LOOP [{loop_count}]: Current UTC: {now_utc.isoformat()}")
-
         time_min_utc_iso = now_utc.isoformat() 
         time_max_utc_iso = (now_utc + datetime.timedelta(minutes=GCAL_EVENT_API_LOOKAHEAD_MINUTES)).isoformat()
         
@@ -478,11 +454,9 @@ def calendar_event_check_loop():
                     seconds_until_event_starts > (-1 * GCAL_PAST_EVENT_TOLERANCE_SECONDS)
                 )
                 
-                # --- [AWAY] Event Logic ---
-                away_match = re.search(GCAL_AWAY_EVENT_PATTERN, summary, re.IGNORECASE)
+                away_match = re.seareturn_codeh(GCAL_AWAY_EVENT_PATTERN, summary, re.IGNORECASE)
                 if away_match and not active_away_event_processed_this_cycle:
                     if is_event_in_action_window:
-                        processed_key = (event_id, event_start_utc)
                         if processed_event_actions.get(event_id) != event_start_utc: # Check if this specific instance was processed
                             duration_str = away_match.group(1)
                             try:
@@ -495,7 +469,6 @@ def calendar_event_check_loop():
                             except ValueError: print(f"GCAL ERROR: Parse AWAY duration for '{summary}'.")
                             except Exception as e: print(f"GCAL ERROR: Processing AWAY '{summary}': {e}")
                 
-                # --- [ALARM] Event Logic ---
                 if GCAL_ALARM_EVENT_KEYWORD.lower() in summary.lower():
                     if is_event_in_action_window:
                         if processed_event_actions.get(event_id) != event_start_utc: # Check if this specific instance was processed
@@ -503,7 +476,6 @@ def calendar_event_check_loop():
                             trigger_alarm_action(event_data)
                             processed_event_actions[event_id] = event_start_utc # Mark this event instance (ID + start_time)
 
-            # Cleanup old processed event actions
             cutoff_time_for_cleanup = now_utc - datetime.timedelta(hours=6) 
             processed_event_actions = {
                 ev_id: start_t for ev_id, start_t in processed_event_actions.items() 
@@ -515,13 +487,13 @@ def calendar_event_check_loop():
             if error.resp.status in [401, 403]: service = None
             if os.path.exists(GCAL_TOKEN_FILE) and error.resp.status in [401,403]:
                 try: os.remove(GCAL_TOKEN_FILE)
-                except OSError: pass
+                except OSError: 
+                    pass
         except Exception as e:
             print(f"GCAL ERROR Loop [{loop_count}]: Unexpected: {e}"); import traceback; traceback.print_exc()
         
         time.sleep(GCAL_CHECK_INTERVAL_SECONDS)
 
-# --- Main Execution ---
 if __name__ == "__main__":
     print("Starting Edge Device 2 (Calendar: Simplified & Clearer TB)...")
 
@@ -537,9 +509,8 @@ if __name__ == "__main__":
     try: mqtt_tb_client.connect(THINGSBOARD_HOST, THINGSBOARD_PORT, 60); mqtt_tb_client.loop_start()
     except Exception as e: print(f"MQTT TB CRITICAL: Connect fail: {e}")
 
-    if SERIAL_PORT_ARDUINO2: # Only start if port is configured
-        threading.Thread(target=read_from_arduino2_thread_func, daemon=True, name="Arduino2Reader").start() 
-    # else: print("INFO: SERIAL_PORT_ARDUINO2 not set. Arduino 2 (buzzer) functions disabled.") # Less verbose
+    if SERIAL_PORT_ARDUINO2: 
+        threading.Thread(target=read_from_arduino2, daemon=True, name="Arduino2Reader").start() 
 
     threading.Thread(target=calendar_event_check_loop, daemon=True, name="GCalEventCheckLoop").start()
 
@@ -551,7 +522,7 @@ if __name__ == "__main__":
         while True: time.sleep(10) 
     except KeyboardInterrupt: print("\nExiting...")
     finally:
-        print("Cleaning up resources...")
+        print("Cleaning up resoureturn_codees...")
         if away_timer_object: away_timer_object.cancel(); print("Active AWAY timer cancelled.")
         if arduino2_serial_connection and arduino2_serial_connection.is_open: arduino2_serial_connection.close()
         

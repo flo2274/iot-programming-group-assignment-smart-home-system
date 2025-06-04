@@ -5,17 +5,14 @@ import pymysql
 from dotenv import load_dotenv
 import datetime
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Database configuration from environment variables
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_USER = os.getenv('DB_USER', 'db_user')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'db_password')
 DB_NAME = os.getenv('DB_NAME', 'iot_smart_home')
 DB_PORT = int(os.getenv('DB_PORT', 3306))
 
-# SQL statement to create the table
 CREATE_SENSOR_DATA_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS `sensor_data` (
     `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -25,15 +22,11 @@ CREATE TABLE IF NOT EXISTS `sensor_data` (
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 """
-# ENGINE=InnoDB is good practice for tables requiring transactions/foreign keys, though not strictly needed here.
-
-# SQL statement to create an index (optional but good for performance on created_at)
 CREATE_TIMESTAMP_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS `idx_created_at` ON `sensor_data` (`created_at`);
 """
 
 def get_db_connection():
-    """Establishes a connection to the MySQL database."""
     try:
         connection = pymysql.connect(
             host=DB_HOST,
@@ -50,9 +43,7 @@ def get_db_connection():
         return None
 
 def ensure_database_exists():
-    """Ensures the database itself exists. Creates it if not."""
     try:
-        # Connect to MySQL server without specifying a database
         connection_to_server = pymysql.connect(
             host=DB_HOST,
             user=DB_USER,
@@ -74,14 +65,11 @@ def ensure_database_exists():
             connection_to_server.close()
 
 
-def initialize_database_schema():
-    """
-    Ensures the database and required tables exist.
-    Creates them if they don't.
-    """
+def initialise_database_schema():
+  
     if not ensure_database_exists():
         print("DB Init: Critical error: Database could not be ensured. Aborting schema initialization.")
-        return False # Stop if database itself can't be created/accessed
+        return False 
 
     connection = get_db_connection() # Now connect to the specific database
     if not connection:
@@ -94,9 +82,6 @@ def initialize_database_schema():
             cursor.execute(CREATE_SENSOR_DATA_TABLE_SQL)
             print("DB Init: 'sensor_data' table creation command executed.")
 
-            # print(f"DB Init: Attempting to create index 'idx_created_at' if it does not exist...")
-            # cursor.execute(CREATE_TIMESTAMP_INDEX_SQL) # MySQL doesn't support CREATE INDEX IF NOT EXISTS directly for all versions/syntax
-            # A more robust way for index is to check if it exists first or ignore error if it does
             try:
                 cursor.execute("SHOW INDEX FROM `sensor_data` WHERE Key_name = 'idx_created_at'")
                 if not cursor.fetchone():
@@ -106,10 +91,6 @@ def initialize_database_schema():
                 else:
                     print("DB Init: Index 'idx_created_at' already exists.")
             except pymysql.MySQLError as index_e:
-                # This might happen if the table was just created and index creation is too fast,
-                # or other syntax issues depending on MySQL version.
-                # For simplicity, we can often just let the table creation handle basic indexing needs
-                # or manage indexes separately/manually for production.
                 print(f"DB Init: Notice during index creation for 'idx_created_at': {index_e} (May be benign if index already exists or table was just created)")
 
         connection.commit()
@@ -123,7 +104,6 @@ def initialize_database_schema():
             connection.close()
 
 def insert_sensor_data(temperature: float, humidity: float, light_level: int):
-    """Inserts new sensor data into the database."""
     if None in [temperature, humidity, light_level]:
         return
 
@@ -144,7 +124,6 @@ def insert_sensor_data(temperature: float, humidity: float, light_level: int):
             connection.close()
 
 def get_historical_sensor_data(limit: int = 100):
-    """Fetches the last 'limit' sensor data records."""
     connection = get_db_connection()
     if not connection:
         print("DB Fetch: Failed to get database connection.")
@@ -165,12 +144,11 @@ def get_historical_sensor_data(limit: int = 100):
         if connection:
             connection.close()
 
-# --- Main block for testing this module ---
 if __name__ == '__main__':
     print("Testing database_utils.py with schema initialization...")
     print(f"DB Config: Host={DB_HOST}, User={DB_USER}, DB={DB_NAME}, Port={DB_PORT}")
 
-    if initialize_database_schema(): # Initialize schema first
+    if initialise_database_schema(): 
         print("\nSchema initialization attempt finished.")
         try:
             print("Attempting to insert test data...")
