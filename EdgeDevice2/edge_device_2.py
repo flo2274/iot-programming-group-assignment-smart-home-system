@@ -338,7 +338,7 @@ def read_from_arduino2():
                             publish_to_thingsboard({"external_led_toggle_requested": True}, event_timestamp_utc=action_time_utc)
                     
                     elif "ir_action" in data:
-                        action_time_utc = datetime.datetime.now(pytz.utc) # Get timestamp for any IR action
+                        action_time_utc = datetime.datetime.now(pytz.utc) 
                         ir_action_value = data["ir_action"]
                         ir_event_for_edge1 = None
                         event_type_str = "UNKNOWN_IR_ACTION"

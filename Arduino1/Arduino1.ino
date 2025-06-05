@@ -1,30 +1,23 @@
-// Arduino1.ino
-
 #include <DHT.h>
 #include <Servo.h>
 #include <Stepper.h>
 
-// --- Configuration ---
-// DHT11 Sensor
 #define DHTPIN 2
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
 
-// Analog Ambient Light Sensor
 #define LIGHT_SENSOR_PIN A0
-
-// LED
 #define LED_PIN 7
 
 // Servo Motor (Window)
 #define SERVO_PIN 5
 Servo windowServo;
 
-// Stepper Motor (Fan) - 28BYJ-48 via ULN2003
+// Stepper Motor (Fan) - 28BYJ-48 (ULN2003)
 const int stepsPerRevolution = 2048;
 Stepper fanStepper(stepsPerRevolution, 8, 10, 9, 11); // IN1, IN3, IN2, IN4 for ULN2003
 
-bool fanOn = false; // Flag for fan state
+bool fanOn = false; // flag for fan state
 
 unsigned long lastSensorReadTime = 0;
 const long sensorReadInterval = 2000; // 2s
@@ -39,13 +32,12 @@ void setup() {
   windowServo.attach(SERVO_PIN);
   windowServo.write(0);
 
-  fanStepper.setSpeed(10); // Reasonable fan speed
+  fanStepper.setSpeed(10);  // testing 
 
   Serial.println("Arduino 1 Ready");
 }
 
 void loop() {
-  // Periodically read sensors
   if (millis() - lastSensorReadTime >= sensorReadInterval) {
     lastSensorReadTime = millis();
 
@@ -65,13 +57,10 @@ void loop() {
     }
   }
 
-  // --- Fan On/Off logic ---
   if (fanOn) {
-    // Keep stepping (simulate running)
     fanStepper.step(1);
   }
 
-  // --- Serial Commands ---
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
     command.trim();
@@ -80,7 +69,8 @@ void loop() {
     if (command.startsWith("LED:")) {
       String state = command.substring(4);
       digitalWrite(LED_PIN, (state == "ON") ? HIGH : LOW);
-    } else if (command.startsWith("LED_BRIGHTNESS:")) {
+    } 
+    else if (command.startsWith("LED_BRIGHTNESS:")) {
       int brightness = command.substring(15).toInt();
       analogWrite(LED_PIN, constrain(brightness, 0, 255));
     }
@@ -93,7 +83,8 @@ void loop() {
     else if (command == "FAN_ON") {
       fanOn = true;
       Serial.println("{\"info\":\"Fan turned ON\"}");
-    } else if (command == "FAN_OFF") {
+    } 
+    else if (command == "FAN_OFF") {
       fanOn = false;
       Serial.println("{\"info\":\"Fan turned OFF\"}");
     }
